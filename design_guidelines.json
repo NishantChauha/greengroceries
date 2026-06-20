@@ -1,0 +1,153 @@
+{
+  "theme_and_archetype": {
+    "theme": "Light",
+    "archetype": "Archetype 1 (Organic & Earthy)",
+    "description": "A clean, professional B2B dashboard infused with a fresh, organic farm-market aesthetic. Moves away from cold corporate SaaS templates by using warm paper/cream backgrounds, deep botanical greens, and tactile borders. Avoids generic tech gradients (no purple/teal)."
+  },
+  "typography": {
+    "rules": "DO NOT use Inter, Roboto, or Space Grotesk. Optimize for a blend of organic warmth and B2B data density.",
+    "fonts": {
+      "headings": {
+        "family": "Fraunces, serif",
+        "weight_strategy": "Use font-light or font-normal for a premium, editorial, farm-to-table feel. Avoid heavy font-black unless for critical numeric stats.",
+        "tracking": "tracking-tight"
+      },
+      "body": {
+        "family": "Albert Sans, sans-serif",
+        "weight_strategy": "Clean, highly legible geometric sans for tabular data and forms. Use font-medium for table headers.",
+        "tracking": "tracking-normal"
+      },
+      "mono": {
+        "family": "JetBrains Mono, monospace",
+        "usage": "For order IDs, SKUs, and numeric data in the combined purchase sheet."
+      }
+    },
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl tracking-tight text-primary font-serif",
+      "h2": "text-2xl sm:text-3xl tracking-tight text-foreground font-serif",
+      "h3": "text-xl sm:text-2xl font-serif text-foreground",
+      "h4": "text-lg font-sans font-medium text-foreground",
+      "body": "text-sm md:text-base text-foreground font-sans",
+      "small_labels": "text-xs font-sans tracking-[0.05em] uppercase text-muted-foreground"
+    },
+    "font_links": [
+      "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;400;500;600&family=Albert+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+    ]
+  },
+  "colors": {
+    "philosophy": "Tinted neutrals. Never use pure #000000 or neutral grays. All grays must be tinted with warm beige or olive. Contrast must pass WCAG AA.",
+    "tokens": {
+      "background": "#F7F5F0",
+      "foreground": "#2D312E",
+      "card": "#FFFFFF",
+      "card-foreground": "#2D312E",
+      "popover": "#FFFFFF",
+      "popover-foreground": "#2D312E",
+      "primary": "#1F4A2C",
+      "primary-foreground": "#FFFFFF",
+      "secondary": "#F4EFE6",
+      "secondary-foreground": "#1F4A2C",
+      "muted": "#EBE7DE",
+      "muted-foreground": "#747A76",
+      "accent": "#D4A373",
+      "accent-foreground": "#FFFFFF",
+      "destructive": "#B23A3A",
+      "destructive-foreground": "#FFFFFF",
+      "border": "#E5E0D8",
+      "input": "#E5E0D8",
+      "ring": "#1F4A2C"
+    },
+    "status_colors": {
+      "pending": {
+        "bg": "#FFF4E5",
+        "text": "#B36B00",
+        "border": "#FFE0B2"
+      },
+      "delivered": {
+        "bg": "#E8F5E9",
+        "text": "#1F4A2C",
+        "border": "#C8E6C9"
+      }
+    }
+  },
+  "spacing_and_layout": {
+    "strategy": "Generous Spacing Philosophy. Use p-6 to p-8 for internal card padding to prevent data collision.",
+    "dashboard_grid": "MODE B: THE CONTROL ROOM GRID. grid-cols-1 md:grid-cols-3 lg:grid-cols-4. gap-6. Strict hierarchy, every pixel utilized but breathing.",
+    "alignment": "Left-align tabular data (strings) and right-align numeric data (quantities, prices). Center-align status badges.",
+    "page_container": "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8"
+  },
+  "components": {
+    "cards": {
+      "style": "Neumorphic-Crisp. bg-white, 1px border border-[#E5E0D8], rounded-xl, soft shadow shadow-sm. Never use heavy box shadows.",
+      "header": "Border-bottom border-[#E5E0D8] pb-4 mb-4"
+    },
+    "buttons": {
+      "primary": "bg-primary text-white hover:bg-[#163820] transition-colors rounded-md px-4 py-2 font-medium",
+      "secondary": "bg-secondary text-secondary-foreground hover:bg-[#E2DCCF] border border-[#E5E0D8] transition-colors rounded-md",
+      "ghost": "hover:bg-muted text-foreground transition-colors rounded-md"
+    },
+    "tables": {
+      "style": "B2B Dense but breathable. Use Shadcn Table. border-b border-[#E5E0D8] on rows.",
+      "header": "bg-[#F7F5F0] text-muted-foreground font-medium text-xs uppercase tracking-wider py-3 px-4",
+      "cells": "py-3 px-4 text-sm text-foreground align-middle",
+      "hover": "hover:bg-[#F9F8F6] transition-colors"
+    },
+    "inputs": {
+      "style": "Shadcn standard but customized radius and border. rounded-md border-[#E5E0D8] bg-white focus:ring-2 focus:ring-[#1F4A2C] focus:border-transparent transition-all",
+      "labels": "text-sm font-medium text-foreground mb-1.5"
+    }
+  },
+  "motion_and_interactions": {
+    "hover_states": "All interactive elements must explicitly set hover colors (e.g., hover:bg-[#163820] hover:text-white).",
+    "transitions": "Use transition-all duration-200 ease-in-out for buttons and inputs.",
+    "page_load": "Subtle fade-in for dashboard widgets (framer-motion or simple CSS animation opacity 0 -> 1 over 300ms).",
+    "accessibility": "Respect prefers-reduced-motion. Ensure focus states (focus:ring) have minimum 3:1 contrast against adjacent colors."
+  },
+  "icons_and_assets": {
+    "library": "lucide-react",
+    "style": "Stroke width 1.5 for a sophisticated, lighter B2B feel.",
+    "usage": "Use icons for sidebar navigation, status indicators, and action buttons (export, add, delete)."
+  },
+  "media_and_images": {
+    "rules": "Main agent MUST use these URLs. Missing categories must not use placeholder text.",
+    "urls": {
+      "auth_background": {
+        "url": "https://images.pexels.com/photos/37321079/pexels-photo-37321079.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Colorful assortment of fresh vegetables in a local market setting. Use with a #1F4A2C/60 overlay to ensure login form readability.",
+        "category": "hero_background"
+      },
+      "wholesale_decorative": {
+        "url": "https://images.pexels.com/photos/12519455/pexels-photo-12519455.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "A wooden crate with fresh vegetables loaded inside a delivery truck. Use for empty states or onboarding screens.",
+        "category": "decorative"
+      },
+      "dashboard_fallback": {
+        "url": "https://images.unsplash.com/photo-1562437243-4117943e59b8?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NjV8MHwxfHNlYXJjaHwzfHxvcmdhbmljJTIwdmVnZXRhYmxlcyUyMG1hcmtldHxlbnwwfHx8fDE3ODE5NTk0MjJ8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Variety of vegetables. Subtle farm market vibe.",
+        "category": "fallback"
+      }
+    }
+  },
+  "testing_attributes": {
+    "rule": "All interactive and key informational elements MUST include a data-testid attribute in kebab-case, role-based format.",
+    "examples": [
+      "data-testid=\"login-submit-button\"",
+      "data-testid=\"hotel-order-form\"",
+      "data-testid=\"export-csv-button\"",
+      "data-testid=\"purchase-sheet-table\"",
+      "data-testid=\"order-status-badge\""
+    ]
+  },
+  "instructions_to_main_agent": [
+    "1. Initialize the project with Vite/React, Tailwind CSS, and shadcn/ui.",
+    "2. Inject the custom Google Fonts (Fraunces, Albert Sans, JetBrains Mono) into the index.html head.",
+    "3. Apply the custom color tokens into tailwind.config.js (extend colors array).",
+    "4. Set the global background color to #F7F5F0 and text color to #2D312E in index.css.",
+    "5. Build the Auth flow (Hotel Login & Admin Login) using the auth_background image with a dark green overlay.",
+    "6. Build the Admin Dashboard: Sidebar navigation, Stats Cards (Total Hotels, Pending Orders, Qty Today) utilizing the Bento grid.",
+    "7. Implement the 'Combined Purchase Sheet' with a Date Picker, aggregating quantities of Potato, Onion, Tomato, Apple, etc.",
+    "8. Implement the 'Order Placement Form' for Hotels, allowing dynamic quantity inputs for catalog items.",
+    "9. Style all Shadcn UI components (Cards, Tables, Inputs, Buttons) strictly according to the 'components' section in this JSON.",
+    "10. Ensure all elements have appropriate data-testid attributes for testing."
+  ]
+}
