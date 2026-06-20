@@ -1,0 +1,304 @@
+import { useEffect, useMemo, useState } from "react";
+import { api, formatApiError } from "@/api/client";
+import { AppShell } from "@/components/AppShell";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { toast, Toaster } from "sonner";
+import { Loader2, ShoppingBasket, History, Carrot, Apple } from "lucide-react";
+
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function StatusBadge({ status }) {
+  const map = {
+    pending: "border-[#FFE0B2] bg-[#FFF4E5] text-[#B36B00]",
+    delivered: "border-[#C8E6C9] bg-[#E8F5E9] text-[#1F4A2C]",
+    cancelled: "border-destructive/30 bg-destructive/10 text-destructive",
+  };
+  return (
+    <span
+      className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[11px] font-medium uppercase tracking-wider ${map[status] || ""}`}
+      data-testid="order-status-badge"
+    >
+      {status}
+    </span>
+  );
+}
+
+export default function HotelDashboard() {
+  const [items, setItems] = useState([]);
+  const [orders, setOrders] = useState([]);
+  const [qty, setQty] = useState({}); // {item_id: number}
+  const [orderDate, setOrderDate] = useState(todayStr());
+  const [notes, setNotes] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  const loadAll = async () => {
+    setLoading(true);
+    try {
+      const [it, ord] = await Promise.all([api.get("/items"), api.get("/orders")]);
+      setItems(it.data);
+      setOrders(ord.data);
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail) || e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadAll(); }, []);
+
+  const vegetables = useMemo(() => items.filter((i) => i.category === "vegetable"), [items]);
+  const fruits = useMemo(() => items.filter((i) => i.category === "fruit"), [items]);
+
+  const totalLines = useMemo(
+    () => Object.values(qty).filter((v) => Number(v) > 0).length,
+    [qty]
+  );
+  const totalQty = useMemo(
+    () => Object.values(qty).reduce((s, v) => s + (Number(v) || 0), 0),
+    [qty]
+  );
+
+  const submitOrder = async (e) => {
+    e.preventDefault();
+    const lines = items
+      .map((it) => ({ item_id: it.id, name: it.name, unit: it.unit, category: it.category, quantity: Number(qty[it.id] || 0) }))
+      .filter((l) => l.quantity > 0);
+
+    if (!lines.length) {
+      toast.error("Add quantity for at least one item");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await api.post("/orders", { order_date: orderDate, notes, lines });
+      toast.success("Order placed!", { description: `${lines.length} items for ${orderDate}` });
+      setQty({});
+      setNotes("");
+      setOrderDate(todayStr());
+      const ord = await api.get("/orders");
+      setOrders(ord.data);
+    } catch (e2) {
+      toast.error(formatApiError(e2.response?.data?.detail) || e2.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const cancelOrder = async (id) => {
+    if (!window.confirm("Delete this order?")) return;
+    try {
+      await api.delete(`/orders/${id}`);
+      setOrders(orders.filter((o) => o.id !== id));
+      toast.success("Order deleted");
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail) || e.message);
+    }
+  };
+
+  const renderItem = (it) => (
+    <div
+      key={it.id}
+      className="flex items-center gap-3 rounded-md border border-border bg-card px-3 py-2 transition-colors hover:bg-[#F9F8F6]"
+      data-testid={`order-item-row-${it.name.toLowerCase()}`}
+    >
+      <span className="text-xl">{it.icon}</span>
+      <div className="flex-1">
+        <div className="text-sm font-medium">{it.name}</div>
+        <div className="text-[11px] uppercase tracking-wider text-muted-foreground">{it.unit}</div>
+      </div>
+      <Input
+        type="number"
+        min={0}
+        step="0.5"
+        placeholder="0"
+        value={qty[it.id] ?? ""}
+        onChange={(e) => setQty({ ...qty, [it.id]: e.target.value })}
+        className="w-24 text-right font-mono"
+        data-testid={`qty-input-${it.name.toLowerCase()}`}
+      />
+    </div>
+  );
+
+  return (
+    <AppShell nav={[
+      { key: "place", label: "Place Order", to: "/hotel" },
+      { key: "history", label: "Order History", to: "/hotel?tab=history" },
+    ]}>
+      <Toaster richColors position="top-right" />
+
+      <div className="mb-8 flex items-end justify-between gap-4">
+        <div>
+          <div className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">Hotel dashboard</div>
+          <h1 className="mt-1 font-serif text-4xl font-light tracking-tight" data-testid="hotel-dashboard-title">
+            Today’s order, beautifully simple.
+          </h1>
+        </div>
+      </div>
+
+      <Tabs defaultValue="place" className="space-y-6">
+        <TabsList data-testid="hotel-tabs">
+          <TabsTrigger value="place" data-testid="tab-place"><ShoppingBasket className="mr-1.5 h-4 w-4" strokeWidth={1.5} /> Place order</TabsTrigger>
+          <TabsTrigger value="history" data-testid="tab-history"><History className="mr-1.5 h-4 w-4" strokeWidth={1.5} /> Order history</TabsTrigger>
+        </TabsList>
+
+        {/* Place order */}
+        <TabsContent value="place" className="space-y-6">
+          <form onSubmit={submitOrder} className="grid grid-cols-1 gap-6 lg:grid-cols-3" data-testid="hotel-order-form">
+            {/* Left: items */}
+            <div className="space-y-6 lg:col-span-2">
+              <Card className="border-border">
+                <CardHeader className="border-b border-border">
+                  <CardTitle className="flex items-center gap-2 font-serif text-xl font-normal">
+                    <Carrot className="h-4 w-4 text-primary" strokeWidth={1.5} /> Vegetables
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="grid grid-cols-1 gap-2 pt-4 sm:grid-cols-2">
+                  {vegetables.map(renderItem)}
+                  {!vegetables.length && !loading ? (
+                    <div className="col-span-full text-sm text-muted-foreground">No vegetables in catalog.</div>
+                  ) : null}
+                </CardContent>
+              </Card>
+
+              <Card className="border-border">
+                <CardHeader className="border-b border-border">
+                  <CardTitle className="flex items-center gap-2 font-serif text-xl font-normal">
+                    <Apple className="h-4 w-4 text-primary" strokeWidth={1.5} /> Fruits
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="grid grid-cols-1 gap-2 pt-4 sm:grid-cols-2">
+                  {fruits.map(renderItem)}
+                  {!fruits.length && !loading ? (
+                    <div className="col-span-full text-sm text-muted-foreground">No fruits in catalog.</div>
+                  ) : null}
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Right: summary */}
+            <div className="space-y-6">
+              <Card className="border-border">
+                <CardHeader className="border-b border-border">
+                  <CardTitle className="font-serif text-xl font-normal">Order details</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4 pt-4">
+                  <div>
+                    <Label htmlFor="order_date">Delivery date</Label>
+                    <Input
+                      id="order_date"
+                      type="date"
+                      required
+                      value={orderDate}
+                      onChange={(e) => setOrderDate(e.target.value)}
+                      data-testid="order-date-input"
+                      className="mt-1.5"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="notes">Notes (optional)</Label>
+                    <Textarea
+                      id="notes"
+                      rows={3}
+                      placeholder="Delivery instructions, item preferences…"
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      data-testid="order-notes-input"
+                      className="mt-1.5"
+                    />
+                  </div>
+                  <div className="rounded-md border border-dashed border-border bg-secondary p-3 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Items selected</span>
+                      <span className="font-mono font-medium" data-testid="summary-lines">{totalLines}</span>
+                    </div>
+                    <div className="mt-1 flex justify-between">
+                      <span className="text-muted-foreground">Total quantity</span>
+                      <span className="font-mono font-medium" data-testid="summary-qty">{totalQty}</span>
+                    </div>
+                  </div>
+                  <Button
+                    type="submit"
+                    disabled={submitting || !totalLines}
+                    className="w-full bg-primary text-primary-foreground hover:bg-[#163820]"
+                    data-testid="submit-order-button"
+                  >
+                    {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                    Submit order
+                  </Button>
+                </CardContent>
+              </Card>
+
+              <div className="rounded-md border border-dashed border-border bg-secondary/60 p-4 text-xs text-muted-foreground">
+                Orders submitted before 10 PM are aggregated into tomorrow’s combined
+                purchase sheet for the mandi buyer.
+              </div>
+            </div>
+          </form>
+        </TabsContent>
+
+        {/* History */}
+        <TabsContent value="history">
+          <Card className="border-border">
+            <CardHeader className="border-b border-border">
+              <CardTitle className="font-serif text-xl font-normal">Your order history</CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              <Table data-testid="hotel-orders-table">
+                <TableHeader>
+                  <TableRow className="bg-[#F7F5F0]">
+                    <TableHead>Order Date</TableHead>
+                    <TableHead>Items</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Placed</TableHead>
+                    <TableHead className="text-right">Action</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {orders.length === 0 ? (
+                    <TableRow><TableCell colSpan={5} className="py-8 text-center text-muted-foreground">No orders yet.</TableCell></TableRow>
+                  ) : null}
+                  {orders.map((o) => (
+                    <TableRow key={o.id} data-testid={`order-row-${o.id}`}>
+                      <TableCell className="font-mono">{o.order_date}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap gap-1">
+                          {o.lines.map((ln) => (
+                            <Badge key={ln.item_id} variant="outline" className="border-border bg-secondary text-foreground">
+                              {ln.name} <span className="ml-1 font-mono text-muted-foreground">· {ln.quantity}{ln.unit}</span>
+                            </Badge>
+                          ))}
+                        </div>
+                      </TableCell>
+                      <TableCell><StatusBadge status={o.status} /></TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {new Date(o.created_at).toLocaleString()}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {o.status === "pending" ? (
+                          <Button variant="ghost" size="sm" onClick={() => cancelOrder(o.id)} data-testid={`cancel-order-${o.id}`} className="text-destructive hover:bg-destructive/10 hover:text-destructive">
+                            Delete
+                          </Button>
+                        ) : null}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+    </AppShell>
+  );
+}
