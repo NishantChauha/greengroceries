@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, formatApiError } from "@/api/client";
+import { api, formatApiError, API } from "@/api/client";
 import { AppShell } from "@/components/AppShell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast, Toaster } from "sonner";
-import { Loader2, ShoppingBasket, History, Carrot, Apple } from "lucide-react";
+import { Loader2, ShoppingBasket, History, Carrot, Apple, Download } from "lucide-react";
 
 function todayStr() {
   const d = new Date();
@@ -104,6 +104,23 @@ export default function HotelDashboard() {
     } catch (e) {
       toast.error(formatApiError(e.response?.data?.detail) || e.message);
     }
+  };
+
+  const exportHistory = (fmt) => {
+    const t = localStorage.getItem("gg_token");
+    fetch(`${API}/orders/export?fmt=${fmt}`, {
+      headers: { Authorization: `Bearer ${t}` },
+      credentials: "include",
+    })
+      .then((r) => r.blob())
+      .then((blob) => {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `my_orders.${fmt}`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+      })
+      .catch(() => toast.error("Export failed"));
   };
 
   const renderItem = (it) => (
@@ -251,7 +268,17 @@ export default function HotelDashboard() {
         <TabsContent value="history">
           <Card className="border-border">
             <CardHeader className="border-b border-border">
-              <CardTitle className="font-serif text-xl font-normal">Your order history</CardTitle>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <CardTitle className="font-serif text-xl font-normal">Your order history</CardTitle>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={() => exportHistory("csv")} className="border-border" data-testid="hotel-export-csv">
+                    <Download className="mr-1.5 h-4 w-4" strokeWidth={1.5} /> CSV
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => exportHistory("pdf")} className="border-border" data-testid="hotel-export-pdf">
+                    <Download className="mr-1.5 h-4 w-4" strokeWidth={1.5} /> PDF
+                  </Button>
+                </div>
+              </div>
             </CardHeader>
             <CardContent className="p-0">
               <Table data-testid="hotel-orders-table">

@@ -15,8 +15,12 @@ import { Badge } from "@/components/ui/badge";
 import { toast, Toaster } from "sonner";
 import {
   LayoutDashboard, ListOrdered, ClipboardList, Box, Hotel, Download,
-  Plus, Trash2, Pencil, Loader2, KeyRound,
+  Plus, Trash2, Pencil, Loader2, KeyRound, BarChart3,
 } from "lucide-react";
+import {
+  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip,
+  CartesianGrid, AreaChart, Area,
+} from "recharts";
 
 function todayStr() {
   const d = new Date();
@@ -70,6 +74,7 @@ export default function AdminDashboard() {
 
   // Orders filter
   const [ordersFilter, setOrdersFilter] = useState("");
+  const [hotelFilterId, setHotelFilterId] = useState("all");
 
   // Items dialog
   const [itemDialog, setItemDialog] = useState({ open: false, mode: "add", current: null });
@@ -85,8 +90,14 @@ export default function AdminDashboard() {
   const loadOrders = async () => { try { const { data } = await api.get("/orders"); setOrders(data); } catch (e) { toast.error("Orders: " + (formatApiError(e.response?.data?.detail) || e.message)); } };
   const loadItems = async () => { try { const { data } = await api.get("/items"); setItems(data); } catch (e) { toast.error("Items: " + (formatApiError(e.response?.data?.detail) || e.message)); } };
   const loadHotels = async () => { try { const { data } = await api.get("/hotels"); setHotels(data); } catch (e) { toast.error("Hotels: " + (formatApiError(e.response?.data?.detail) || e.message)); } };
+  const [analytics, setAnalytics] = useState(null);
+  const [analyticsDays, setAnalyticsDays] = useState(7);
+  const loadAnalytics = async (days = analyticsDays) => {
+    try { const { data } = await api.get("/analytics", { params: { days } }); setAnalytics(data); }
+    catch (e) { toast.error("Analytics: " + (formatApiError(e.response?.data?.detail) || e.message)); }
+  };
 
-  useEffect(() => { loadStats(); loadOrders(); loadItems(); loadHotels(); }, []);
+  useEffect(() => { loadStats(); loadOrders(); loadItems(); loadHotels(); loadAnalytics(); }, []);
 
   const fetchSheet = async () => {
     setLoadingSheet(true);
@@ -101,15 +112,27 @@ export default function AdminDashboard() {
     }
   };
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { fetchSheet(); }, []);
 
-  const exportCsv = () => {
-    const params = sheetMode === "date"
-      ? `date_from=${sheetFrom}`
-      : `date_from=${sheetFrom}&date_to=${sheetTo}`;
-    const url = `${API}/purchase-sheet/export?${params}`;
-    window.open(url, "_blank");
+  const exportSheet = (fmt) => {
+    const qs = new URLSearchParams({ fmt });
+    qs.set("date_from", sheetFrom);
+    if (sheetMode === "range") qs.set("date_to", sheetTo);
+    const t = localStorage.getItem("gg_token");
+    fetch(`${API}/purchase-sheet/export?${qs.toString()}`, {
+      headers: { Authorization: `Bearer ${t}` },
+      credentials: "include",
+    })
+      .then((r) => r.blob())
+      .then((blob) => {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        const range = sheetMode === "range" ? `${sheetFrom}_to_${sheetTo}` : sheetFrom;
+        a.download = `purchase_sheet_${range}.${fmt}`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+      })
+      .catch(() => toast.error("Export failed"));
   };
 
   const setStatus = async (id, status) => {
@@ -122,14 +145,38 @@ export default function AdminDashboard() {
   };
 
   const filteredOrders = useMemo(() => {
-    if (!ordersFilter) return orders;
+    let list = orders;
+    if (hotelFilterId !== "all") list = list.filter((o) => o.hotel_id === hotelFilterId);
+    if (!ordersFilter) return list;
     const q = ordersFilter.toLowerCase();
-    return orders.filter((o) =>
+    return list.filter((o) =>
       o.hotel_name.toLowerCase().includes(q) ||
       o.order_date.includes(q) ||
       o.status.includes(q)
     );
-  }, [orders, ordersFilter]);
+  }, [orders, ordersFilter, hotelFilterId]);
+
+  const exportOrders = (fmt) => {
+    const qs = new URLSearchParams({ fmt });
+    if (hotelFilterId !== "all") qs.set("hotel_id", hotelFilterId);
+    const t = localStorage.getItem("gg_token");
+    const url = `${API}/orders/export?${qs.toString()}${t ? `&_=${encodeURIComponent(t)}` : ""}`;
+    // Use fetch + blob so Authorization header is sent (window.open won't carry the header)
+    fetch(`${API}/orders/export?${qs.toString()}`, {
+      headers: { Authorization: `Bearer ${t}` },
+      credentials: "include",
+    })
+      .then((r) => r.blob())
+      .then((blob) => {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        const label = hotelFilterId === "all" ? "all-hotels" : "filtered";
+        a.download = `orders_${label}.${fmt}`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+      })
+      .catch(() => toast.error("Export failed"));
+  };
 
   // Item CRUD
   const openAddItem = () => {
@@ -241,6 +288,7 @@ export default function AdminDashboard() {
           <TabsTrigger value="orders" data-testid="tab-orders"><ListOrdered className="mr-1.5 h-4 w-4" strokeWidth={1.5} /> Orders</TabsTrigger>
           <TabsTrigger value="items" data-testid="tab-items"><Box className="mr-1.5 h-4 w-4" strokeWidth={1.5} /> Items</TabsTrigger>
           <TabsTrigger value="hotels" data-testid="tab-hotels"><Hotel className="mr-1.5 h-4 w-4" strokeWidth={1.5} /> Hotels</TabsTrigger>
+          <TabsTrigger value="analytics" data-testid="tab-analytics"><BarChart3 className="mr-1.5 h-4 w-4" strokeWidth={1.5} /> Analytics</TabsTrigger>
         </TabsList>
 
         {/* Purchase sheet */}
@@ -275,8 +323,11 @@ export default function AdminDashboard() {
                   {loadingSheet ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                   Generate
                 </Button>
-                <Button variant="outline" onClick={exportCsv} className="border-border" data-testid="export-csv-button">
-                  <Download className="mr-1.5 h-4 w-4" strokeWidth={1.5} /> Export CSV
+                <Button variant="outline" onClick={() => exportSheet("csv")} className="border-border" data-testid="export-csv-button">
+                  <Download className="mr-1.5 h-4 w-4" strokeWidth={1.5} /> CSV
+                </Button>
+                <Button variant="outline" onClick={() => exportSheet("pdf")} className="border-border" data-testid="export-pdf-button">
+                  <Download className="mr-1.5 h-4 w-4" strokeWidth={1.5} /> PDF
                 </Button>
               </div>
 
@@ -328,13 +379,32 @@ export default function AdminDashboard() {
             <CardHeader className="border-b border-border">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <CardTitle className="font-serif text-xl font-normal">All hotel orders</CardTitle>
-                <Input
-                  placeholder="Search hotel, date, or status…"
-                  value={ordersFilter}
-                  onChange={(e) => setOrdersFilter(e.target.value)}
-                  className="max-w-xs"
-                  data-testid="orders-search-input"
-                />
+                <div className="flex flex-wrap items-center gap-2">
+                  <Select value={hotelFilterId} onValueChange={setHotelFilterId}>
+                    <SelectTrigger className="w-56" data-testid="orders-hotel-filter">
+                      <SelectValue placeholder="All hotels" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All hotels</SelectItem>
+                      {hotels.map((h) => (
+                        <SelectItem key={h.id} value={h.id}>{h.hotel_name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Input
+                    placeholder="Search…"
+                    value={ordersFilter}
+                    onChange={(e) => setOrdersFilter(e.target.value)}
+                    className="w-44"
+                    data-testid="orders-search-input"
+                  />
+                  <Button variant="outline" size="sm" onClick={() => exportOrders("csv")} className="border-border" data-testid="orders-export-csv">
+                    <Download className="mr-1.5 h-4 w-4" strokeWidth={1.5} /> CSV
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => exportOrders("pdf")} className="border-border" data-testid="orders-export-pdf">
+                    <Download className="mr-1.5 h-4 w-4" strokeWidth={1.5} /> PDF
+                  </Button>
+                </div>
               </div>
             </CardHeader>
             <CardContent className="p-0">
@@ -584,6 +654,94 @@ export default function AdminDashboard() {
               </Table>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Analytics */}
+        <TabsContent value="analytics" className="space-y-6">
+          <div className="flex items-end justify-between">
+            <div>
+              <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Period</div>
+              <div className="font-mono text-sm">
+                {analytics ? `${analytics.range.from} → ${analytics.range.to}` : "—"}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Select value={String(analyticsDays)} onValueChange={(v) => { setAnalyticsDays(Number(v)); loadAnalytics(Number(v)); }}>
+                <SelectTrigger className="w-32" data-testid="analytics-range-select"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="7">Last 7 days</SelectItem>
+                  <SelectItem value="14">Last 14 days</SelectItem>
+                  <SelectItem value="30">Last 30 days</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <Card className="border-border">
+            <CardHeader className="border-b border-border">
+              <CardTitle className="font-serif text-xl font-normal">Daily order volume</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-6">
+              <div className="h-72" data-testid="chart-volume">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={analytics?.weekly_volume || []} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+                    <defs>
+                      <linearGradient id="gQty" x1="0" x2="0" y1="0" y2="1">
+                        <stop offset="0%" stopColor="#1F4A2C" stopOpacity={0.35} />
+                        <stop offset="100%" stopColor="#1F4A2C" stopOpacity={0.02} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid stroke="#E5E0D8" vertical={false} />
+                    <XAxis dataKey="date" stroke="#747A76" fontSize={11} tickFormatter={(d) => d.slice(5)} />
+                    <YAxis stroke="#747A76" fontSize={11} />
+                    <Tooltip contentStyle={{ background: "#fff", border: "1px solid #E5E0D8", borderRadius: 8 }} />
+                    <Area type="monotone" dataKey="quantity" stroke="#1F4A2C" strokeWidth={2} fill="url(#gQty)" name="Quantity" />
+                    <Area type="monotone" dataKey="orders" stroke="#D4A373" strokeWidth={1.5} fill="none" name="Orders" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </CardContent>
+          </Card>
+
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <Card className="border-border">
+              <CardHeader className="border-b border-border">
+                <CardTitle className="font-serif text-xl font-normal">Top items</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-6">
+                <div className="h-72" data-testid="chart-top-items">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={analytics?.top_items || []} layout="vertical" margin={{ left: 8, right: 24 }}>
+                      <CartesianGrid stroke="#E5E0D8" horizontal={false} />
+                      <XAxis type="number" stroke="#747A76" fontSize={11} />
+                      <YAxis type="category" dataKey="name" stroke="#747A76" fontSize={11} width={90} />
+                      <Tooltip contentStyle={{ background: "#fff", border: "1px solid #E5E0D8", borderRadius: 8 }} />
+                      <Bar dataKey="quantity" fill="#1F4A2C" radius={[0, 4, 4, 0]} name="Total quantity" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-border">
+              <CardHeader className="border-b border-border">
+                <CardTitle className="font-serif text-xl font-normal">Top hotels</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-6">
+                <div className="h-72" data-testid="chart-top-hotels">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={analytics?.top_hotels || []} layout="vertical" margin={{ left: 8, right: 24 }}>
+                      <CartesianGrid stroke="#E5E0D8" horizontal={false} />
+                      <XAxis type="number" stroke="#747A76" fontSize={11} />
+                      <YAxis type="category" dataKey="hotel_name" stroke="#747A76" fontSize={11} width={110} />
+                      <Tooltip contentStyle={{ background: "#fff", border: "1px solid #E5E0D8", borderRadius: 8 }} />
+                      <Bar dataKey="quantity" fill="#D4A373" radius={[0, 4, 4, 0]} name="Total quantity" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
         </TabsContent>
       </Tabs>
     </AppShell>

@@ -257,10 +257,13 @@ async def list_orders(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     status: Optional[str] = None,
+    hotel_id: Optional[str] = None,
 ):
     query: dict = {}
     if user["role"] == "hotel":
         query["hotel_id"] = user["id"]
+    elif hotel_id:
+        query["hotel_id"] = hotel_id
     if date_from and date_to:
         query["order_date"] = {"$gte": date_from, "$lte": date_to}
     elif date_from:
@@ -366,9 +369,12 @@ async def purchase_sheet(
 async def export_purchase_sheet(
     date_from: str,
     date_to: Optional[str] = None,
+    fmt: str = "csv",
     _: dict = Depends(require_admin),
 ):
     sheet = await purchase_sheet(date_from=date_from, date_to=date_to, _=_)
+    if fmt == "pdf":
+        return _pdf_purchase_sheet(sheet)
     buf = StringIO()
     writer = csv.writer(buf)
     writer.writerow(["Green Groceries - Combined Purchase Sheet"])
@@ -385,6 +391,221 @@ async def export_purchase_sheet(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ----- Orders export (CSV / PDF) — supports per-hotel filter -----
+async def _gather_orders(user: dict, date_from: Optional[str], date_to: Optional[str],
+                        status: Optional[str], hotel_id: Optional[str]) -> List[dict]:
+    query: dict = {}
+    if user["role"] == "hotel":
+        query["hotel_id"] = user["id"]
+    elif hotel_id:
+        query["hotel_id"] = hotel_id
+    if date_from and date_to:
+        query["order_date"] = {"$gte": date_from, "$lte": date_to}
+    elif date_from:
+        query["order_date"] = {"$gte": date_from}
+    elif date_to:
+        query["order_date"] = {"$lte": date_to}
+    if status:
+        query["status"] = status
+    return await db.orders.find(query).sort([("order_date", -1), ("created_at", -1)]).to_list(5000)
+
+
+@api.get("/orders/export")
+async def export_orders(
+    fmt: str = "csv",
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    status: Optional[str] = None,
+    hotel_id: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
+    docs = await _gather_orders(user, date_from, date_to, status, hotel_id)
+    label = "all"
+    if hotel_id and user["role"] == "admin":
+        h = await db.users.find_one({"_id": ObjectId(hotel_id)})
+        if h:
+            label = (h.get("hotel_name") or "hotel").replace(" ", "_")
+    elif user["role"] == "hotel":
+        label = (user.get("hotel_name") or "myhotel").replace(" ", "_")
+
+    range_label = f"{date_from or 'all'}_to_{date_to or 'all'}"
+    if fmt == "pdf":
+        return _pdf_orders(docs, label, date_from, date_to)
+
+    buf = StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["Green Groceries - Orders Export"])
+    writer.writerow([f"Hotel: {label}", f"From: {date_from or '—'}", f"To: {date_to or '—'}", f"Status: {status or 'all'}"])
+    writer.writerow([])
+    writer.writerow(["Order Date", "Hotel", "Item", "Category", "Unit", "Quantity", "Status", "Notes", "Placed At"])
+    for d in docs:
+        for ln in d["lines"]:
+            writer.writerow([
+                d["order_date"], d["hotel_name"], ln["name"], ln["category"], ln["unit"],
+                ln["quantity"], d["status"], d.get("notes") or "", d["created_at"],
+            ])
+    buf.seek(0)
+    filename = f"orders_{label}_{range_label}.csv"
+    return StreamingResponse(
+        iter([buf.read()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _pdf_purchase_sheet(sheet: dict):
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from io import BytesIO
+
+    out = BytesIO()
+    doc = SimpleDocTemplate(out, pagesize=A4, leftMargin=20*mm, rightMargin=20*mm,
+                            topMargin=18*mm, bottomMargin=18*mm)
+    styles = getSampleStyleSheet()
+    h = ParagraphStyle("h", parent=styles["Heading1"], textColor=colors.HexColor("#1F4A2C"))
+    sub = ParagraphStyle("sub", parent=styles["Normal"], textColor=colors.HexColor("#747A76"))
+
+    elems = [
+        Paragraph("Green Groceries — Combined Purchase Sheet", h),
+        Paragraph(
+            f"Period: <b>{sheet['date_from']}</b> to <b>{sheet['date_to']}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
+            f"Hotels: <b>{sheet['total_hotels']}</b> &nbsp;|&nbsp; Orders: <b>{sheet['total_orders']}</b>", sub),
+        Spacer(1, 8*mm),
+    ]
+    data = [["Item", "Category", "Unit", "Total Qty", "Hotels"]]
+    for r in sheet["rows"]:
+        data.append([r["name"], r["category"].title(), r["unit"], str(r["total_quantity"]), str(r["hotel_count"])])
+    if len(data) == 1:
+        data.append(["—", "—", "—", "—", "—"])
+    t = Table(data, repeatRows=1, hAlign="LEFT", colWidths=[55*mm, 30*mm, 20*mm, 30*mm, 25*mm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4A2C")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("ALIGN", (3, 1), (4, -1), "RIGHT"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#FFFFFF"), colors.HexColor("#F7F5F0")]),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#E5E0D8")),
+        ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    elems.append(t)
+    doc.build(elems)
+    out.seek(0)
+    filename = f"purchase_sheet_{sheet['date_from']}_to_{sheet['date_to']}.pdf"
+    return StreamingResponse(out, media_type="application/pdf",
+                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+def _pdf_orders(docs: List[dict], label: str, date_from, date_to):
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from io import BytesIO
+
+    out = BytesIO()
+    doc = SimpleDocTemplate(out, pagesize=A4, leftMargin=15*mm, rightMargin=15*mm,
+                            topMargin=15*mm, bottomMargin=15*mm)
+    styles = getSampleStyleSheet()
+    h = ParagraphStyle("h", parent=styles["Heading1"], textColor=colors.HexColor("#1F4A2C"))
+    sub = ParagraphStyle("sub", parent=styles["Normal"], textColor=colors.HexColor("#747A76"))
+
+    elems = [
+        Paragraph("Green Groceries — Orders Report", h),
+        Paragraph(
+            f"Hotel: <b>{label}</b> &nbsp;|&nbsp; From: <b>{date_from or '—'}</b> &nbsp;|&nbsp; To: <b>{date_to or '—'}</b>",
+            sub),
+        Spacer(1, 6*mm),
+    ]
+
+    data = [["Date", "Hotel", "Item", "Unit", "Qty", "Status"]]
+    for d in docs:
+        for ln in d["lines"]:
+            data.append([d["order_date"], d["hotel_name"], ln["name"], ln["unit"],
+                         str(ln["quantity"]), d["status"]])
+    if len(data) == 1:
+        data.append(["—"] * 6)
+    t = Table(data, repeatRows=1, hAlign="LEFT",
+              colWidths=[25*mm, 40*mm, 40*mm, 18*mm, 18*mm, 25*mm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4A2C")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("ALIGN", (4, 1), (4, -1), "RIGHT"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#FFFFFF"), colors.HexColor("#F7F5F0")]),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#E5E0D8")),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    elems.append(t)
+    doc.build(elems)
+    out.seek(0)
+    filename = f"orders_{label}.pdf"
+    return StreamingResponse(out, media_type="application/pdf",
+                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+# ----- Analytics (admin) -----
+@api.get("/analytics")
+async def analytics(_: dict = Depends(require_admin), days: int = 7):
+    today = datetime.now(timezone.utc).date()
+    start = today - timedelta(days=days - 1)
+    start_str = start.strftime("%Y-%m-%d")
+    today_str = today.strftime("%Y-%m-%d")
+
+    docs = await db.orders.find(
+        {"order_date": {"$gte": start_str, "$lte": today_str}, "status": {"$ne": "cancelled"}}
+    ).to_list(5000)
+
+    # Build daily volume series
+    by_day: dict = {}
+    for i in range(days):
+        d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
+        by_day[d] = {"date": d, "orders": 0, "quantity": 0.0}
+    item_totals: dict = {}
+    hotel_totals: dict = {}
+    for d in docs:
+        key = d["order_date"]
+        if key in by_day:
+            by_day[key]["orders"] += 1
+            for ln in d["lines"]:
+                by_day[key]["quantity"] += float(ln["quantity"])
+        for ln in d["lines"]:
+            n = ln["name"]
+            if n not in item_totals:
+                item_totals[n] = {"name": n, "unit": ln["unit"], "category": ln["category"], "quantity": 0.0}
+            item_totals[n]["quantity"] += float(ln["quantity"])
+        hid = d["hotel_id"]
+        if hid not in hotel_totals:
+            hotel_totals[hid] = {"hotel_id": hid, "hotel_name": d["hotel_name"], "orders": 0, "quantity": 0.0}
+        hotel_totals[hid]["orders"] += 1
+        for ln in d["lines"]:
+            hotel_totals[hid]["quantity"] += float(ln["quantity"])
+
+    weekly = sorted(by_day.values(), key=lambda x: x["date"])
+    for w in weekly:
+        w["quantity"] = round(w["quantity"], 2)
+    top_items = sorted(item_totals.values(), key=lambda x: x["quantity"], reverse=True)[:8]
+    for it in top_items:
+        it["quantity"] = round(it["quantity"], 2)
+    top_hotels = sorted(hotel_totals.values(), key=lambda x: x["quantity"], reverse=True)[:8]
+    for h in top_hotels:
+        h["quantity"] = round(h["quantity"], 2)
+
+    return {
+        "range": {"from": start_str, "to": today_str, "days": days},
+        "weekly_volume": weekly,
+        "top_items": top_items,
+        "top_hotels": top_hotels,
+    }
 
 
 # ----- Stats -----
