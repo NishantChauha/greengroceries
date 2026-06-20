@@ -75,10 +75,10 @@ export default function AdminDashboard() {
   const [itemDialog, setItemDialog] = useState({ open: false, mode: "add", current: null });
   const [itemForm, setItemForm] = useState({ name: "", category: "vegetable", unit: "kg", icon: "" });
 
-  const loadStats = async () => { try { const { data } = await api.get("/stats"); setStats(data); } catch (e) { /* ignore */ } };
-  const loadOrders = async () => { try { const { data } = await api.get("/orders"); setOrders(data); } catch (e) { /* ignore */ } };
-  const loadItems = async () => { try { const { data } = await api.get("/items"); setItems(data); } catch (e) { /* ignore */ } };
-  const loadHotels = async () => { try { const { data } = await api.get("/hotels"); setHotels(data); } catch (e) { /* ignore */ } };
+  const loadStats = async () => { try { const { data } = await api.get("/stats"); setStats(data); } catch (e) { toast.error("Stats: " + (formatApiError(e.response?.data?.detail) || e.message)); } };
+  const loadOrders = async () => { try { const { data } = await api.get("/orders"); setOrders(data); } catch (e) { toast.error("Orders: " + (formatApiError(e.response?.data?.detail) || e.message)); } };
+  const loadItems = async () => { try { const { data } = await api.get("/items"); setItems(data); } catch (e) { toast.error("Items: " + (formatApiError(e.response?.data?.detail) || e.message)); } };
+  const loadHotels = async () => { try { const { data } = await api.get("/hotels"); setHotels(data); } catch (e) { toast.error("Hotels: " + (formatApiError(e.response?.data?.detail) || e.message)); } };
 
   useEffect(() => { loadStats(); loadOrders(); loadItems(); loadHotels(); }, []);
 

@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
-import { api, formatApiError } from "@/api/client";
+import { api, formatApiError, setToken, getToken } from "@/api/client";
 
 const AuthContext = createContext(null);
 
@@ -8,10 +8,22 @@ export function AuthProvider({ children }) {
   const [error, setError] = useState("");
 
   const refresh = useCallback(async () => {
+    if (!getToken()) {
+      // No token yet — try cookie-based first
+      try {
+        const { data } = await api.get("/auth/me");
+        setUser(data);
+        return;
+      } catch {
+        setUser(false);
+        return;
+      }
+    }
     try {
       const { data } = await api.get("/auth/me");
       setUser(data);
     } catch {
+      setToken(null);
       setUser(false);
     }
   }, []);
@@ -20,12 +32,17 @@ export function AuthProvider({ children }) {
     refresh();
   }, [refresh]);
 
+  const handleAuthResponse = (data) => {
+    if (data.access_token) setToken(data.access_token);
+    setUser(data.user);
+    return data.user;
+  };
+
   const login = async (email, password) => {
     setError("");
     try {
       const { data } = await api.post("/auth/login", { email, password });
-      setUser(data);
-      return data;
+      return handleAuthResponse(data);
     } catch (e) {
       const msg = formatApiError(e.response?.data?.detail) || e.message;
       setError(msg);
@@ -37,8 +54,7 @@ export function AuthProvider({ children }) {
     setError("");
     try {
       const { data } = await api.post("/auth/register", payload);
-      setUser(data);
-      return data;
+      return handleAuthResponse(data);
     } catch (e) {
       const msg = formatApiError(e.response?.data?.detail) || e.message;
       setError(msg);
@@ -52,6 +68,7 @@ export function AuthProvider({ children }) {
     } catch {
       /* ignore */
     }
+    setToken(null);
     setUser(false);
   };
 

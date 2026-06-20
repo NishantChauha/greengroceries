@@ -162,7 +162,7 @@ def user_to_out(user: dict) -> dict:
 
 
 # ----- Auth endpoints -----
-@api.post("/auth/register", response_model=UserOut)
+@api.post("/auth/register")
 async def register(payload: RegisterIn, response: Response):
     email = payload.email.lower()
     existing = await db.users.find_one({"email": email})
@@ -183,10 +183,10 @@ async def register(payload: RegisterIn, response: Response):
     token = create_access_token(user_id, email, "hotel")
     set_auth_cookies(response, token)
     doc["id"] = user_id
-    return user_to_out(doc)
+    return {"user": user_to_out(doc), "access_token": token}
 
 
-@api.post("/auth/login", response_model=UserOut)
+@api.post("/auth/login")
 async def login(payload: LoginIn, response: Response):
     email = payload.email.lower()
     user = await db.users.find_one({"email": email})
@@ -196,7 +196,7 @@ async def login(payload: LoginIn, response: Response):
     token = create_access_token(user_id, email, user["role"])
     set_auth_cookies(response, token)
     user["id"] = user_id
-    return user_to_out(user)
+    return {"user": user_to_out(user), "access_token": token}
 
 
 @api.post("/auth/logout")
