@@ -162,29 +162,7 @@ def user_to_out(user: dict) -> dict:
 
 
 # ----- Auth endpoints -----
-@api.post("/auth/register")
-async def register(payload: RegisterIn, response: Response):
-    email = payload.email.lower()
-    existing = await db.users.find_one({"email": email})
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    doc = {
-        "email": email,
-        "password_hash": hash_password(payload.password),
-        "name": payload.name,
-        "role": "hotel",
-        "hotel_name": payload.hotel_name,
-        "phone": payload.phone,
-        "address": payload.address,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    result = await db.users.insert_one(doc)
-    user_id = str(result.inserted_id)
-    token = create_access_token(user_id, email, "hotel")
-    set_auth_cookies(response, token)
-    doc["id"] = user_id
-    return {"user": user_to_out(doc), "access_token": token}
-
+# Public registration is disabled — hotels are created by admin.
 
 @api.post("/auth/login")
 async def login(payload: LoginIn, response: Response):
@@ -303,10 +281,23 @@ async def list_orders(
 
 
 @api.patch("/orders/{order_id}/status")
-async def update_order_status(order_id: str, body: dict, _: dict = Depends(require_admin)):
+async def update_order_status(order_id: str, body: dict, user: dict = Depends(get_current_user)):
     new_status = body.get("status")
     if new_status not in {"pending", "delivered", "cancelled"}:
         raise HTTPException(status_code=400, detail="Invalid status")
+
+    # Hotels may only cancel their own pending orders. Admin may set any status.
+    if user["role"] == "hotel":
+        if new_status != "cancelled":
+            raise HTTPException(status_code=403, detail="Hotels can only cancel orders")
+        existing = await db.orders.find_one({"_id": ObjectId(order_id)})
+        if not existing:
+            raise HTTPException(status_code=404, detail="Order not found")
+        if existing["hotel_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="Not your order")
+        if existing["status"] != "pending":
+            raise HTTPException(status_code=400, detail="Only pending orders can be cancelled")
+
     result = await db.orders.update_one(
         {"_id": ObjectId(order_id)}, {"$set": {"status": new_status}}
     )
@@ -316,11 +307,9 @@ async def update_order_status(order_id: str, body: dict, _: dict = Depends(requi
 
 
 @api.delete("/orders/{order_id}")
-async def delete_order(order_id: str, user: dict = Depends(get_current_user)):
-    query = {"_id": ObjectId(order_id)}
-    if user["role"] == "hotel":
-        query["hotel_id"] = user["id"]
-    result = await db.orders.delete_one(query)
+async def delete_order(order_id: str, _: dict = Depends(require_admin)):
+    # Hard delete is admin-only. Hotels should use PATCH /status cancelled to preserve history.
+    result = await db.orders.delete_one({"_id": ObjectId(order_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Order not found")
     return {"ok": True}
@@ -419,7 +408,66 @@ async def stats(_: dict = Depends(require_admin)):
     }
 
 
-# ----- Hotels list (admin only) -----
+# ----- Hotels (admin only) -----
+class HotelCreateIn(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=6)
+    name: str = Field(min_length=2)
+    hotel_name: str = Field(min_length=2)
+    phone: Optional[str] = None
+    address: Optional[str] = None
+
+
+class HotelPasswordIn(BaseModel):
+    password: str = Field(min_length=6)
+
+
+@api.post("/hotels")
+async def create_hotel(payload: HotelCreateIn, _: dict = Depends(require_admin)):
+    email = payload.email.lower()
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(status_code=400, detail="Email already registered")
+    doc = {
+        "email": email,
+        "password_hash": hash_password(payload.password),
+        "name": payload.name,
+        "role": "hotel",
+        "hotel_name": payload.hotel_name,
+        "phone": payload.phone,
+        "address": payload.address,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    result = await db.users.insert_one(doc)
+    return {
+        "id": str(result.inserted_id),
+        "email": email,
+        "name": payload.name,
+        "hotel_name": payload.hotel_name,
+        "phone": payload.phone,
+        "address": payload.address,
+    }
+
+
+@api.patch("/hotels/{hotel_id}/password")
+async def reset_hotel_password(hotel_id: str, payload: HotelPasswordIn, _: dict = Depends(require_admin)):
+    hotel = await db.users.find_one({"_id": ObjectId(hotel_id), "role": "hotel"})
+    if not hotel:
+        raise HTTPException(status_code=404, detail="Hotel not found")
+    await db.users.update_one(
+        {"_id": ObjectId(hotel_id)},
+        {"$set": {"password_hash": hash_password(payload.password)}},
+    )
+    return {"ok": True}
+
+
+@api.delete("/hotels/{hotel_id}")
+async def delete_hotel(hotel_id: str, _: dict = Depends(require_admin)):
+    result = await db.users.delete_one({"_id": ObjectId(hotel_id), "role": "hotel"})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Hotel not found")
+    return {"ok": True}
+
+
 @api.get("/hotels")
 async def list_hotels(_: dict = Depends(require_admin)):
     docs = await db.users.find({"role": "hotel"}).sort("hotel_name", 1).to_list(1000)

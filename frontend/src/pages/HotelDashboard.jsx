@@ -96,11 +96,11 @@ export default function HotelDashboard() {
   };
 
   const cancelOrder = async (id) => {
-    if (!window.confirm("Delete this order?")) return;
+    if (!window.confirm("Cancel this order? It will remain in your history.")) return;
     try {
-      await api.delete(`/orders/${id}`);
-      setOrders(orders.filter((o) => o.id !== id));
-      toast.success("Order deleted");
+      await api.patch(`/orders/${id}/status`, { status: "cancelled" });
+      setOrders(orders.map((o) => (o.id === id ? { ...o, status: "cancelled" } : o)));
+      toast.success("Order cancelled");
     } catch (e) {
       toast.error(formatApiError(e.response?.data?.detail) || e.message);
     }
@@ -287,7 +287,7 @@ export default function HotelDashboard() {
                       <TableCell className="text-right">
                         {o.status === "pending" ? (
                           <Button variant="ghost" size="sm" onClick={() => cancelOrder(o.id)} data-testid={`cancel-order-${o.id}`} className="text-destructive hover:bg-destructive/10 hover:text-destructive">
-                            Delete
+                            Cancel
                           </Button>
                         ) : null}
                       </TableCell>

@@ -15,7 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast, Toaster } from "sonner";
 import {
   LayoutDashboard, ListOrdered, ClipboardList, Box, Hotel, Download,
-  Plus, Trash2, Pencil, Loader2,
+  Plus, Trash2, Pencil, Loader2, KeyRound,
 } from "lucide-react";
 
 function todayStr() {
@@ -74,6 +74,12 @@ export default function AdminDashboard() {
   // Items dialog
   const [itemDialog, setItemDialog] = useState({ open: false, mode: "add", current: null });
   const [itemForm, setItemForm] = useState({ name: "", category: "vegetable", unit: "kg", icon: "" });
+
+  // Hotel dialog (create or reset password)
+  const [hotelDialog, setHotelDialog] = useState({ open: false, mode: "add", current: null });
+  const blankHotelForm = { email: "", password: "", name: "", hotel_name: "", phone: "", address: "" };
+  const [hotelForm, setHotelForm] = useState(blankHotelForm);
+  const [showHotelPwd, setShowHotelPwd] = useState(true);
 
   const loadStats = async () => { try { const { data } = await api.get("/stats"); setStats(data); } catch (e) { toast.error("Stats: " + (formatApiError(e.response?.data?.detail) || e.message)); } };
   const loadOrders = async () => { try { const { data } = await api.get("/orders"); setOrders(data); } catch (e) { toast.error("Orders: " + (formatApiError(e.response?.data?.detail) || e.message)); } };
@@ -154,6 +160,61 @@ export default function AdminDashboard() {
       setItems(items.filter((it) => it.id !== id));
       toast.success("Item removed");
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail) || e.message); }
+  };
+
+  // Hotel CRUD
+  function genPassword() {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789abcdefghijkmnpqrstuvwxyz";
+    let p = "";
+    for (let i = 0; i < 10; i++) p += chars[Math.floor(Math.random() * chars.length)];
+    return p;
+  }
+  const openAddHotel = () => {
+    setHotelForm({ ...blankHotelForm, password: genPassword() });
+    setShowHotelPwd(true);
+    setHotelDialog({ open: true, mode: "add", current: null });
+  };
+  const openResetHotel = (h) => {
+    setHotelForm({ ...blankHotelForm, password: genPassword(), hotel_name: h.hotel_name });
+    setShowHotelPwd(true);
+    setHotelDialog({ open: true, mode: "reset", current: h });
+  };
+  const saveHotel = async () => {
+    try {
+      if (hotelDialog.mode === "add") {
+        const payload = { ...hotelForm, email: hotelForm.email.trim().toLowerCase() };
+        await api.post("/hotels", payload);
+        toast.success("Hotel created", {
+          description: `${payload.email} · ${hotelForm.password}`,
+          duration: 8000,
+        });
+      } else {
+        await api.patch(`/hotels/${hotelDialog.current.id}/password`, { password: hotelForm.password });
+        toast.success("Password reset", {
+          description: `${hotelDialog.current.email} · ${hotelForm.password}`,
+          duration: 8000,
+        });
+      }
+      setHotelDialog({ open: false, mode: "add", current: null });
+      loadHotels(); loadStats();
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail) || e.message); }
+  };
+  const removeHotel = async (h) => {
+    if (!window.confirm(`Remove hotel "${h.hotel_name}"? Their orders remain in history.`)) return;
+    try {
+      await api.delete(`/hotels/${h.id}`);
+      setHotels(hotels.filter((x) => x.id !== h.id));
+      loadStats();
+      toast.success("Hotel removed");
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail) || e.message); }
+  };
+  const copyHotelPwd = async () => {
+    try {
+      await navigator.clipboard.writeText(`${hotelForm.email || hotelDialog.current?.email}  /  ${hotelForm.password}`);
+      toast.success("Copied to clipboard");
+    } catch {
+      toast.error("Copy failed — please copy manually");
+    }
   };
 
   return (
@@ -411,7 +472,80 @@ export default function AdminDashboard() {
         <TabsContent value="hotels">
           <Card className="border-border">
             <CardHeader className="border-b border-border">
-              <CardTitle className="font-serif text-xl font-normal">Registered hotels</CardTitle>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <CardTitle className="font-serif text-xl font-normal">Registered hotels</CardTitle>
+                <Dialog open={hotelDialog.open} onOpenChange={(o) => setHotelDialog({ ...hotelDialog, open: o })}>
+                  <DialogTrigger asChild>
+                    <Button onClick={openAddHotel} className="bg-primary text-primary-foreground hover:bg-[#163820]" data-testid="add-hotel-button">
+                      <Plus className="mr-1.5 h-4 w-4" /> Add hotel
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent data-testid="hotel-dialog" className="sm:max-w-lg">
+                    <DialogHeader>
+                      <DialogTitle className="font-serif text-2xl font-normal">
+                        {hotelDialog.mode === "add" ? "Create hotel login" : `Reset password — ${hotelDialog.current?.hotel_name}`}
+                      </DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-4 py-2">
+                      {hotelDialog.mode === "add" ? (
+                        <>
+                          <div>
+                            <Label htmlFor="h_hotel">Hotel name</Label>
+                            <Input id="h_hotel" value={hotelForm.hotel_name} onChange={(e) => setHotelForm({ ...hotelForm, hotel_name: e.target.value })} className="mt-1.5" data-testid="hotel-name-input" placeholder="Grand Plaza" />
+                          </div>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <Label htmlFor="h_name">Contact name</Label>
+                              <Input id="h_name" value={hotelForm.name} onChange={(e) => setHotelForm({ ...hotelForm, name: e.target.value })} className="mt-1.5" data-testid="hotel-contact-input" placeholder="Mr. Sharma" />
+                            </div>
+                            <div>
+                              <Label htmlFor="h_phone">Phone</Label>
+                              <Input id="h_phone" value={hotelForm.phone} onChange={(e) => setHotelForm({ ...hotelForm, phone: e.target.value })} className="mt-1.5" data-testid="hotel-phone-input" placeholder="+91…" />
+                            </div>
+                          </div>
+                          <div>
+                            <Label htmlFor="h_email">Email (used to log in)</Label>
+                            <Input id="h_email" type="email" value={hotelForm.email} onChange={(e) => setHotelForm({ ...hotelForm, email: e.target.value })} className="mt-1.5" data-testid="hotel-email-input" placeholder="orders@hotel.com" />
+                          </div>
+                          <div>
+                            <Label htmlFor="h_addr">Address (optional)</Label>
+                            <Input id="h_addr" value={hotelForm.address} onChange={(e) => setHotelForm({ ...hotelForm, address: e.target.value })} className="mt-1.5" data-testid="hotel-address-input" />
+                          </div>
+                        </>
+                      ) : null}
+
+                      <div>
+                        <Label htmlFor="h_pwd">Password (visible — share with hotel)</Label>
+                        <div className="mt-1.5 flex gap-2">
+                          <Input
+                            id="h_pwd"
+                            type={showHotelPwd ? "text" : "password"}
+                            value={hotelForm.password}
+                            onChange={(e) => setHotelForm({ ...hotelForm, password: e.target.value })}
+                            data-testid="hotel-password-input"
+                            className="font-mono"
+                          />
+                          <Button type="button" variant="outline" onClick={() => setShowHotelPwd(!showHotelPwd)} data-testid="hotel-pwd-toggle">
+                            {showHotelPwd ? "Hide" : "Show"}
+                          </Button>
+                          <Button type="button" variant="outline" onClick={() => setHotelForm({ ...hotelForm, password: genPassword() })} data-testid="hotel-pwd-regen">
+                            New
+                          </Button>
+                        </div>
+                        <div className="mt-1.5 text-xs text-muted-foreground">
+                          Min 6 chars. Once saved, you’ll see it in a toast — copy & share it with the hotel.
+                        </div>
+                      </div>
+                    </div>
+                    <DialogFooter className="gap-2">
+                      <Button variant="outline" onClick={copyHotelPwd} data-testid="hotel-copy-button">Copy credentials</Button>
+                      <Button onClick={saveHotel} className="bg-primary text-primary-foreground hover:bg-[#163820]" data-testid="hotel-save-button">
+                        {hotelDialog.mode === "add" ? "Create hotel" : "Reset password"}
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+              </div>
             </CardHeader>
             <CardContent className="p-0">
               <Table data-testid="hotels-table">
@@ -422,19 +556,28 @@ export default function AdminDashboard() {
                     <TableHead>Email</TableHead>
                     <TableHead>Phone</TableHead>
                     <TableHead>Address</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {hotels.length === 0 ? (
-                    <TableRow><TableCell colSpan={5} className="py-8 text-center text-muted-foreground">No hotels registered yet.</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">No hotels yet. Click &ldquo;Add hotel&rdquo; to create the first login.</TableCell></TableRow>
                   ) : null}
                   {hotels.map((h) => (
                     <TableRow key={h.id} data-testid={`hotel-row-${h.id}`}>
                       <TableCell className="font-medium">{h.hotel_name}</TableCell>
                       <TableCell>{h.name}</TableCell>
-                      <TableCell className="text-muted-foreground">{h.email}</TableCell>
+                      <TableCell className="font-mono text-xs text-muted-foreground">{h.email}</TableCell>
                       <TableCell className="text-muted-foreground">{h.phone || "—"}</TableCell>
                       <TableCell className="text-muted-foreground">{h.address || "—"}</TableCell>
+                      <TableCell className="text-right">
+                        <Button variant="ghost" size="sm" onClick={() => openResetHotel(h)} data-testid={`reset-hotel-${h.id}`} title="Reset password">
+                          <KeyRound className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => removeHotel(h)} data-testid={`delete-hotel-${h.id}`} className="text-destructive hover:text-destructive">
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, Navigate, useNavigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -107,10 +107,7 @@ export default function LoginPage() {
           </form>
 
           <div className="mt-6 text-sm text-muted-foreground">
-            New hotel?{" "}
-            <Link to="/register" className="font-medium text-primary hover:underline" data-testid="goto-register-link">
-              Create an account
-            </Link>
+            New hotel? <span className="text-foreground">Contact the admin to get your login credentials.</span>
           </div>
 
           <div className="mt-6 rounded-md border border-dashed border-border bg-secondary/60 p-3 text-xs text-muted-foreground">
