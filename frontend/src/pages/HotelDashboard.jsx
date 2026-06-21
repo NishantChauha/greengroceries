@@ -10,7 +10,11 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast, Toaster } from "sonner";
-import { Loader2, ShoppingBasket, History, Carrot, Apple, Download, Receipt } from "lucide-react";
+import { Loader2, ShoppingBasket, History, Carrot, Apple, Download, Receipt, FileText } from "lucide-react";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
+  DropdownMenuSeparator, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 function todayStr() {
   const d = new Date();
@@ -134,9 +138,10 @@ export default function HotelDashboard() {
       .catch(() => toast.error("Export failed"));
   };
 
-  const downloadInvoice = (orderId) => {
+  const downloadBill = (orderId, kind) => {
     const t = localStorage.getItem("gg_token");
-    fetch(`${API}/orders/${orderId}/invoice.pdf`, {
+    const file = kind === "inventory" ? "inventory.pdf" : "invoice.pdf";
+    fetch(`${API}/orders/${orderId}/${file}`, {
       headers: { Authorization: `Bearer ${t}` },
       credentials: "include",
     })
@@ -144,11 +149,11 @@ export default function HotelDashboard() {
       .then((blob) => {
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
-        a.download = `invoice_${orderId.slice(-6)}.pdf`;
+        a.download = `${kind}_${orderId.slice(-6)}.pdf`;
         a.click();
         URL.revokeObjectURL(a.href);
       })
-      .catch(() => toast.error("Invoice download failed"));
+      .catch(() => toast.error(`${kind} download failed`));
   };
 
   const renderItem = (it) => (
@@ -346,14 +351,33 @@ export default function HotelDashboard() {
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">
-                          <Button
-                            variant="ghost" size="sm" onClick={() => downloadInvoice(o.id)}
-                            data-testid={`hotel-invoice-${o.id}`}
-                            disabled={!o.grand_total}
-                            title={o.grand_total ? "Download invoice PDF" : "Bill not generated yet"}
-                          >
-                            <Receipt className="h-3.5 w-3.5" />
-                          </Button>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="sm" data-testid={`hotel-bill-menu-${o.id}`} title="Download bill">
+                                <Receipt className="h-3.5 w-3.5" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-56">
+                              <DropdownMenuLabel className="text-xs uppercase tracking-wider text-muted-foreground">
+                                Download bill
+                              </DropdownMenuLabel>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem onClick={() => downloadBill(o.id, "inventory")} data-testid={`hotel-bill-inventory-${o.id}`}>
+                                <FileText className="mr-2 h-4 w-4" />
+                                <div className="flex flex-col">
+                                  <span>Inventory bill</span>
+                                  <span className="text-[11px] text-muted-foreground">Items & quantity only</span>
+                                </div>
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => downloadBill(o.id, "invoice")} disabled={!o.grand_total} data-testid={`hotel-bill-invoice-${o.id}`}>
+                                <Receipt className="mr-2 h-4 w-4" />
+                                <div className="flex flex-col">
+                                  <span>Invoice bill</span>
+                                  <span className="text-[11px] text-muted-foreground">{o.grand_total ? `With prices · ₹ ${o.grand_total.toFixed(2)}` : "Awaiting bill"}</span>
+                                </div>
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                           {o.status === "pending" ? (
                             <Button variant="ghost" size="sm" onClick={() => cancelOrder(o.id)} data-testid={`cancel-order-${o.id}`} className="text-destructive hover:bg-destructive/10 hover:text-destructive">
                               Cancel

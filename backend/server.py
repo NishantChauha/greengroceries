@@ -75,6 +75,7 @@ class ItemIn(BaseModel):
     category: str = Field(default="vegetable")  # vegetable | fruit
     unit: str = Field(default="kg")
     icon: Optional[str] = None
+    default_rate: float = 0.0
 
 class ItemOut(BaseModel):
     id: str
@@ -82,6 +83,7 @@ class ItemOut(BaseModel):
     category: str
     unit: str
     icon: Optional[str] = None
+    default_rate: float = 0.0
 
 class OrderLine(BaseModel):
     item_id: str
@@ -217,7 +219,8 @@ async def me(user: dict = Depends(get_current_user)):
 async def list_items(user: dict = Depends(get_current_user)):
     docs = await db.items.find({}).sort("name", 1).to_list(1000)
     return [{"id": str(d["_id"]), "name": d["name"], "category": d["category"],
-             "unit": d["unit"], "icon": d.get("icon")} for d in docs]
+             "unit": d["unit"], "icon": d.get("icon"),
+             "default_rate": float(d.get("default_rate") or 0.0)} for d in docs]
 
 
 @api.post("/items", response_model=ItemOut)
@@ -238,7 +241,8 @@ async def update_item(item_id: str, payload: ItemIn, _: dict = Depends(require_a
     if not doc:
         raise HTTPException(status_code=404, detail="Item not found")
     return {"id": str(doc["_id"]), "name": doc["name"], "category": doc["category"],
-            "unit": doc["unit"], "icon": doc.get("icon")}
+            "unit": doc["unit"], "icon": doc.get("icon"),
+            "default_rate": float(doc.get("default_rate") or 0.0)}
 
 
 @api.delete("/items/{item_id}")
@@ -259,6 +263,19 @@ async def create_order(payload: OrderIn, user: dict = Depends(get_current_user))
     valid_lines = [ln.model_dump() for ln in payload.lines if ln.quantity > 0]
     if not valid_lines:
         raise HTTPException(status_code=400, detail="Add quantity for at least one item")
+
+    # Auto-fill rate from each item's default_rate when the hotel didn't enter one
+    catalog = {}
+    for ln in valid_lines:
+        if float(ln.get("rate") or 0) == 0 and ln.get("item_id"):
+            try:
+                if ln["item_id"] not in catalog:
+                    it = await db.items.find_one({"_id": ObjectId(ln["item_id"])})
+                    catalog[ln["item_id"]] = float((it or {}).get("default_rate") or 0)
+                ln["rate"] = catalog[ln["item_id"]]
+            except Exception:
+                pass
+
     subtotal, tax, grand = _compute_totals(valid_lines, 0.0)
     doc = {
         "hotel_id": user["id"],
@@ -584,7 +601,18 @@ def _xlsx_orders(docs: List[dict], label: str, date_from, date_to):
     )
 
 
-# ----- Invoice PDF -----
+# ----- Bills / Invoices -----
+@api.get("/orders/{order_id}/inventory.pdf")
+async def order_inventory_pdf(order_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.orders.find_one({"_id": ObjectId(order_id)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if user["role"] == "hotel" and doc["hotel_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Not your order")
+    hotel = await db.users.find_one({"_id": ObjectId(doc["hotel_id"])}) if doc.get("hotel_id") else None
+    return _pdf_bill(doc, hotel or {}, with_prices=False)
+
+
 @api.get("/orders/{order_id}/invoice.pdf")
 async def order_invoice(order_id: str, user: dict = Depends(get_current_user)):
     doc = await db.orders.find_one({"_id": ObjectId(order_id)})
@@ -593,10 +621,10 @@ async def order_invoice(order_id: str, user: dict = Depends(get_current_user)):
     if user["role"] == "hotel" and doc["hotel_id"] != user["id"]:
         raise HTTPException(status_code=403, detail="Not your order")
     hotel = await db.users.find_one({"_id": ObjectId(doc["hotel_id"])}) if doc.get("hotel_id") else None
-    return _pdf_invoice(doc, hotel or {})
+    return _pdf_bill(doc, hotel or {}, with_prices=True)
 
 
-def _pdf_invoice(order: dict, hotel: dict):
+def _pdf_bill(order: dict, hotel: dict, with_prices: bool = True):
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -616,17 +644,18 @@ def _pdf_invoice(order: dict, hotel: dict):
                         textColor=colors.HexColor("#1F4A2C"))
     body = ParagraphStyle("body", parent=styles["Normal"], fontSize=10, leading=13)
 
-    inv_no = f"GG-{order.get('order_date','').replace('-','')}-{str(order.get('_id') or order.get('id'))[-6:]}"
+    prefix = "INV" if with_prices else "DC"  # Delivery Challan for inventory
+    title = "INVOICE" if with_prices else "INVENTORY BILL"
+    inv_no = f"GG-{prefix}-{order.get('order_date','').replace('-','')}-{str(order.get('_id') or order.get('id'))[-6:]}"
     issued = datetime.now(timezone.utc).strftime("%d %b %Y")
 
     elems = []
-    # Header band
     header_tbl = Table([
         [
             Paragraph("Green Groceries", brand),
             Paragraph(
-                f"<b>INVOICE</b><br/>"
-                f"Invoice No: <b>{inv_no}</b><br/>"
+                f"<b>{title}</b><br/>"
+                f"Doc No: <b>{inv_no}</b><br/>"
                 f"Order Date: <b>{order.get('order_date','—')}</b><br/>"
                 f"Issued: {issued}", body),
         ]
@@ -637,10 +666,11 @@ def _pdf_invoice(order: dict, hotel: dict):
     ]))
     elems.append(header_tbl)
     elems.append(Spacer(1, 4*mm))
-    elems.append(Paragraph("Hotel produce ordering · Daily mandi sheet", sub))
+    sub_line = ("Hotel produce ordering · Daily mandi sheet" if with_prices else
+                "Delivery challan — items supplied (no pricing)")
+    elems.append(Paragraph(sub_line, sub))
     elems.append(Spacer(1, 8*mm))
 
-    # Bill to / from
     bill_to = (
         f"<b>{order.get('hotel_name','—')}</b><br/>"
         f"{hotel.get('name','') or ''}<br/>"
@@ -649,7 +679,8 @@ def _pdf_invoice(order: dict, hotel: dict):
         f"{hotel.get('address','') or ''}"
     )
     bill_block = Table([
-        [Paragraph("BILL TO", h2), Paragraph("FROM", h2)],
+        [Paragraph("SUPPLIED TO" if not with_prices else "BILL TO", h2),
+         Paragraph("FROM", h2)],
         [Paragraph(bill_to, body),
          Paragraph("Green Groceries<br/>Wholesale Fruits & Vegetables<br/>orders@greengroceries.com", body)],
     ], colWidths=[85*mm, 85*mm])
@@ -657,26 +688,35 @@ def _pdf_invoice(order: dict, hotel: dict):
     elems.append(bill_block)
     elems.append(Spacer(1, 8*mm))
 
-    # Items table
-    data = [["#", "Product", "Unit", "Qty", "Rate", "Amount"]]
-    subtotal = 0.0
-    for i, ln in enumerate(order["lines"], 1):
-        qty = float(ln.get("quantity", 0))
-        rate = float(ln.get("rate", 0))
-        amount = float(ln.get("amount", qty * rate))
-        subtotal += amount
-        data.append([
-            str(i), ln["name"], ln.get("unit", ""),
-            f"{qty:g}", f"{rate:,.2f}", f"{amount:,.2f}",
-        ])
+    if with_prices:
+        data = [["#", "Product", "Unit", "Qty", "Rate", "Amount"]]
+        col_widths = [10*mm, 70*mm, 18*mm, 22*mm, 25*mm, 30*mm]
+        subtotal = 0.0
+        for i, ln in enumerate(order["lines"], 1):
+            qty = float(ln.get("quantity", 0))
+            rate = float(ln.get("rate", 0))
+            amount = float(ln.get("amount", qty * rate))
+            subtotal += amount
+            data.append([str(i), ln["name"], ln.get("unit", ""),
+                         f"{qty:g}", f"{rate:,.2f}", f"{amount:,.2f}"])
+        align_right_from = 3
+    else:
+        data = [["#", "Product", "Category", "Unit", "Quantity"]]
+        col_widths = [12*mm, 80*mm, 35*mm, 25*mm, 25*mm]
+        subtotal = 0.0  # unused
+        for i, ln in enumerate(order["lines"], 1):
+            qty = float(ln.get("quantity", 0))
+            data.append([str(i), ln["name"],
+                         (ln.get("category") or "").replace("_", " ").title(),
+                         ln.get("unit", ""), f"{qty:g}"])
+        align_right_from = 4
 
-    t = Table(data, repeatRows=1, hAlign="LEFT",
-              colWidths=[10*mm, 70*mm, 18*mm, 22*mm, 25*mm, 30*mm])
+    t = Table(data, repeatRows=1, hAlign="LEFT", colWidths=col_widths)
     t.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4A2C")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("ALIGN", (3, 0), (-1, -1), "RIGHT"),
+        ("ALIGN", (align_right_from, 0), (-1, -1), "RIGHT"),
         ("ALIGN", (0, 0), (0, -1), "CENTER"),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1),
          [colors.HexColor("#FFFFFF"), colors.HexColor("#F7F5F0")]),
@@ -688,41 +728,50 @@ def _pdf_invoice(order: dict, hotel: dict):
     elems.append(t)
     elems.append(Spacer(1, 4*mm))
 
-    # Totals box
-    tax_rate = float(order.get("tax_rate") or 0)
-    tax = float(order.get("tax") or round(subtotal * tax_rate / 100.0, 2))
-    grand = float(order.get("grand_total") or round(subtotal + tax, 2))
+    if with_prices:
+        tax_rate = float(order.get("tax_rate") or 0)
+        tax = float(order.get("tax") or round(subtotal * tax_rate / 100.0, 2))
+        grand = float(order.get("grand_total") or round(subtotal + tax, 2))
+        totals_data = [
+            ["Subtotal", f"₹ {subtotal:,.2f}"],
+            [f"Tax ({tax_rate:g}%)", f"₹ {tax:,.2f}"],
+            ["Grand Total", f"₹ {grand:,.2f}"],
+        ]
+        totals = Table(totals_data, colWidths=[40*mm, 40*mm], hAlign="RIGHT")
+        totals.setStyle(TableStyle([
+            ("ALIGN", (0, 0), (-1, -1), "RIGHT"),
+            ("FONTSIZE", (0, 0), (-1, -1), 10),
+            ("TEXTCOLOR", (0, 2), (-1, 2), colors.HexColor("#1F4A2C")),
+            ("FONTNAME", (0, 2), (-1, 2), "Helvetica-Bold"),
+            ("LINEABOVE", (0, 2), (-1, 2), 0.8, colors.HexColor("#1F4A2C")),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        elems.append(totals)
+    else:
+        total_qty = sum(float(ln.get("quantity", 0)) for ln in order["lines"])
+        elems.append(Paragraph(
+            f"<b>Total items:</b> {len(order['lines'])} &nbsp;&nbsp;|&nbsp;&nbsp; "
+            f"<b>Total quantity:</b> {total_qty:g}",
+            body,
+        ))
 
-    totals_data = [
-        ["Subtotal", f"₹ {subtotal:,.2f}"],
-        [f"Tax ({tax_rate:g}%)", f"₹ {tax:,.2f}"],
-        ["Grand Total", f"₹ {grand:,.2f}"],
-    ]
-    totals = Table(totals_data, colWidths=[40*mm, 40*mm], hAlign="RIGHT")
-    totals.setStyle(TableStyle([
-        ("ALIGN", (0, 0), (-1, -1), "RIGHT"),
-        ("FONTSIZE", (0, 0), (-1, -1), 10),
-        ("TEXTCOLOR", (0, 2), (-1, 2), colors.HexColor("#1F4A2C")),
-        ("FONTNAME", (0, 2), (-1, 2), "Helvetica-Bold"),
-        ("LINEABOVE", (0, 2), (-1, 2), 0.8, colors.HexColor("#1F4A2C")),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-    ]))
-    elems.append(totals)
     elems.append(Spacer(1, 10*mm))
-
     if order.get("notes"):
         elems.append(Paragraph(f"<b>Notes:</b> {order['notes']}", sub))
         elems.append(Spacer(1, 4*mm))
 
+    footer = ("Thank you for choosing Green Groceries. Payment due within 7 days."
+              if with_prices else
+              "This is a delivery note. No financial value. Please verify items on receipt.")
     elems.append(Paragraph(
-        "Thank you for choosing Green Groceries. Payment due within 7 days.",
+        footer,
         ParagraphStyle("foot", parent=styles["Normal"], fontSize=9,
                        textColor=colors.HexColor("#747A76"), alignment=1)))
 
     doc_pdf.build(elems)
     out.seek(0)
-    filename = f"invoice_{inv_no}.pdf"
+    filename = f"{'invoice' if with_prices else 'inventory'}_{inv_no}.pdf"
     return StreamingResponse(out, media_type="application/pdf",
                              headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
@@ -1017,16 +1066,16 @@ async def on_startup():
     # Seed default catalog
     if await db.items.count_documents({}) == 0:
         default_items = [
-            {"name": "Potato", "category": "vegetable", "unit": "kg", "icon": "🥔"},
-            {"name": "Onion", "category": "vegetable", "unit": "kg", "icon": "🧅"},
-            {"name": "Tomato", "category": "vegetable", "unit": "kg", "icon": "🍅"},
-            {"name": "Garlic", "category": "vegetable", "unit": "kg", "icon": "🧄"},
-            {"name": "Carrot", "category": "vegetable", "unit": "kg", "icon": "🥕"},
-            {"name": "Capsicum", "category": "vegetable", "unit": "kg", "icon": "🫑"},
-            {"name": "Apple", "category": "fruit", "unit": "kg", "icon": "🍎"},
-            {"name": "Banana", "category": "fruit", "unit": "dozen", "icon": "🍌"},
-            {"name": "Orange", "category": "fruit", "unit": "kg", "icon": "🍊"},
-            {"name": "Papaya", "category": "fruit", "unit": "kg", "icon": "🍈"},
+            {"name": "Potato", "category": "vegetable", "unit": "kg", "icon": "🥔", "default_rate": 30},
+            {"name": "Onion", "category": "vegetable", "unit": "kg", "icon": "🧅", "default_rate": 35},
+            {"name": "Tomato", "category": "vegetable", "unit": "kg", "icon": "🍅", "default_rate": 40},
+            {"name": "Garlic", "category": "vegetable", "unit": "kg", "icon": "🧄", "default_rate": 180},
+            {"name": "Carrot", "category": "vegetable", "unit": "kg", "icon": "🥕", "default_rate": 50},
+            {"name": "Capsicum", "category": "vegetable", "unit": "kg", "icon": "🫑", "default_rate": 60},
+            {"name": "Apple", "category": "fruit", "unit": "kg", "icon": "🍎", "default_rate": 150},
+            {"name": "Banana", "category": "fruit", "unit": "dozen", "icon": "🍌", "default_rate": 60},
+            {"name": "Orange", "category": "fruit", "unit": "kg", "icon": "🍊", "default_rate": 80},
+            {"name": "Papaya", "category": "fruit", "unit": "kg", "icon": "🍈", "default_rate": 45},
         ]
         for it in default_items:
             it["created_at"] = datetime.now(timezone.utc).isoformat()

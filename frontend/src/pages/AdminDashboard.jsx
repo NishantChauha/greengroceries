@@ -12,10 +12,14 @@ import {
 } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
+  DropdownMenuSeparator, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { toast, Toaster } from "sonner";
 import {
   LayoutDashboard, ListOrdered, ClipboardList, Box, Hotel, Download,
-  Plus, Trash2, Pencil, Loader2, KeyRound, BarChart3, Receipt, FileSpreadsheet,
+  Plus, Trash2, Pencil, Loader2, KeyRound, BarChart3, Receipt, FileSpreadsheet, FileText,
 } from "lucide-react";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip,
@@ -185,9 +189,10 @@ export default function AdminDashboard() {
       .catch(() => toast.error("Export failed"));
   };
 
-  const downloadInvoice = (orderId) => {
+  const downloadBill = (orderId, kind /* "invoice" | "inventory" */) => {
     const t = localStorage.getItem("gg_token");
-    fetch(`${API}/orders/${orderId}/invoice.pdf`, {
+    const file = kind === "inventory" ? "inventory.pdf" : "invoice.pdf";
+    fetch(`${API}/orders/${orderId}/${file}`, {
       headers: { Authorization: `Bearer ${t}` },
       credentials: "include",
     })
@@ -195,12 +200,14 @@ export default function AdminDashboard() {
       .then((blob) => {
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
-        a.download = `invoice_${orderId.slice(-6)}.pdf`;
+        a.download = `${kind}_${orderId.slice(-6)}.pdf`;
         a.click();
         URL.revokeObjectURL(a.href);
       })
-      .catch(() => toast.error("Invoice download failed"));
+      .catch(() => toast.error(`${kind} download failed`));
   };
+
+  const downloadInvoice = (orderId) => downloadBill(orderId, "invoice");
 
   const saveOrderEdit = async () => {
     if (!editOrder) return;
@@ -221,13 +228,14 @@ export default function AdminDashboard() {
 
   // Item CRUD
   const openAddItem = () => {
-    setItemForm({ name: "", category: "vegetable", unit: "kg", icon: "", customCategory: "", customUnit: "" });
+    setItemForm({ name: "", category: "vegetable", unit: "kg", icon: "", default_rate: 0, customCategory: "", customUnit: "" });
     setItemDialog({ open: true, mode: "add", current: null });
   };
   const openEditItem = (it) => {
     setItemForm({
       name: it.name, category: it.category, unit: it.unit,
-      icon: it.icon || "", customCategory: "", customUnit: "",
+      icon: it.icon || "", default_rate: it.default_rate || 0,
+      customCategory: "", customUnit: "",
     });
     setItemDialog({ open: true, mode: "edit", current: it });
   };
@@ -236,6 +244,7 @@ export default function AdminDashboard() {
       const payload = {
         name: itemForm.name,
         icon: itemForm.icon,
+        default_rate: Number(itemForm.default_rate) || 0,
         category: itemForm.category === "__custom__"
           ? (itemForm.customCategory || "").trim().toLowerCase().replace(/\s+/g, "_")
           : itemForm.category,
@@ -639,9 +648,33 @@ export default function AdminDashboard() {
                           <Button variant="ghost" size="sm" onClick={() => setEditOrder({ ...o, lines: o.lines.map(l => ({ ...l })) })} data-testid={`edit-order-${o.id}`} title="Edit rates & quantities">
                             <Pencil className="h-3.5 w-3.5" />
                           </Button>
-                          <Button variant="ghost" size="sm" onClick={() => downloadInvoice(o.id)} data-testid={`invoice-order-${o.id}`} title="Download invoice PDF" disabled={!o.grand_total}>
-                            <Receipt className="h-3.5 w-3.5" />
-                          </Button>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="sm" data-testid={`bill-menu-${o.id}`} title="Download bill">
+                                <Receipt className="h-3.5 w-3.5" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-56">
+                              <DropdownMenuLabel className="text-xs uppercase tracking-wider text-muted-foreground">
+                                Download bill
+                              </DropdownMenuLabel>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem onClick={() => downloadBill(o.id, "inventory")} data-testid={`bill-inventory-${o.id}`}>
+                                <FileText className="mr-2 h-4 w-4" />
+                                <div className="flex flex-col">
+                                  <span>Inventory bill</span>
+                                  <span className="text-[11px] text-muted-foreground">Items & quantity only</span>
+                                </div>
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => downloadBill(o.id, "invoice")} disabled={!o.grand_total} data-testid={`bill-invoice-${o.id}`}>
+                                <Receipt className="mr-2 h-4 w-4" />
+                                <div className="flex flex-col">
+                                  <span>Invoice bill</span>
+                                  <span className="text-[11px] text-muted-foreground">{o.grand_total ? `With prices · ₹ ${o.grand_total.toFixed(2)}` : "Set rates first"}</span>
+                                </div>
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                           <Select value={o.status} onValueChange={(v) => setStatus(o.id, v)}>
                             <SelectTrigger className="ml-1 w-32" data-testid={`status-select-${o.id}`}>
                               <SelectValue />
@@ -757,6 +790,20 @@ export default function AdminDashboard() {
                         <Label htmlFor="i_icon">Icon (emoji, optional)</Label>
                         <Input id="i_icon" value={itemForm.icon} onChange={(e) => setItemForm({ ...itemForm, icon: e.target.value })} className="mt-1.5" data-testid="item-icon-input" placeholder="🥕" />
                       </div>
+                      <div>
+                        <Label htmlFor="i_rate">Default rate per {itemForm.unit === "__custom__" ? "unit" : itemForm.unit} (₹)</Label>
+                        <Input
+                          id="i_rate" type="number" min={0} step="0.01"
+                          value={itemForm.default_rate ?? 0}
+                          onChange={(e) => setItemForm({ ...itemForm, default_rate: Number(e.target.value) })}
+                          className="mt-1.5 font-mono"
+                          data-testid="item-rate-input"
+                          placeholder="0"
+                        />
+                        <div className="mt-1.5 text-xs text-muted-foreground">
+                          Used to auto-fill rate on new orders. Admin can override per order.
+                        </div>
+                      </div>
                     </div>
                     <DialogFooter>
                       <Button onClick={saveItem} className="bg-primary text-primary-foreground hover:bg-[#163820]" data-testid="item-save-button">Save</Button>
@@ -772,6 +819,7 @@ export default function AdminDashboard() {
                     <TableHead>Item</TableHead>
                     <TableHead>Category</TableHead>
                     <TableHead>Unit</TableHead>
+                    <TableHead className="text-right">Default rate</TableHead>
                     <TableHead className="text-right">Action</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -781,6 +829,9 @@ export default function AdminDashboard() {
                       <TableCell className="font-medium"><span className="mr-2 text-lg">{it.icon}</span>{it.name}</TableCell>
                       <TableCell className="capitalize text-muted-foreground">{(it.category || "").replace(/_/g, " ")}</TableCell>
                       <TableCell className="text-muted-foreground">{it.unit}</TableCell>
+                      <TableCell className="text-right font-mono">
+                        {it.default_rate > 0 ? `₹ ${Number(it.default_rate).toFixed(2)}` : <span className="text-xs text-muted-foreground">—</span>}
+                      </TableCell>
                       <TableCell className="text-right">
                         <Button variant="ghost" size="sm" onClick={() => openEditItem(it)} data-testid={`edit-item-${it.id}`}><Pencil className="h-3.5 w-3.5" /></Button>
                         <Button variant="ghost" size="sm" onClick={() => removeItem(it.id)} data-testid={`delete-item-${it.id}`} className="text-destructive hover:text-destructive"><Trash2 className="h-3.5 w-3.5" /></Button>
