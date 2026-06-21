@@ -111,7 +111,7 @@ export default function LoginPage() {
           </div>
 
           <div className="mt-6 rounded-md border border-dashed border-border bg-secondary/60 p-3 text-xs text-muted-foreground">
-            <div className="mb-1 font-medium uppercase tracking-[0.14em] text-foreground">Demo admin</div>
+            <div className="mb-1 font-medium uppercase tracking-[0.14em] text-foreground">Demo Nishant admin</div>
             admin@greengroceries.com · admin123
           </div>
         </Card>
