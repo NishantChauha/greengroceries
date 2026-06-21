@@ -221,20 +221,33 @@ export default function AdminDashboard() {
 
   // Item CRUD
   const openAddItem = () => {
-    setItemForm({ name: "", category: "vegetable", unit: "kg", icon: "" });
+    setItemForm({ name: "", category: "vegetable", unit: "kg", icon: "", customCategory: "", customUnit: "" });
     setItemDialog({ open: true, mode: "add", current: null });
   };
   const openEditItem = (it) => {
-    setItemForm({ name: it.name, category: it.category, unit: it.unit, icon: it.icon || "" });
+    setItemForm({
+      name: it.name, category: it.category, unit: it.unit,
+      icon: it.icon || "", customCategory: "", customUnit: "",
+    });
     setItemDialog({ open: true, mode: "edit", current: it });
   };
   const saveItem = async () => {
     try {
+      const payload = {
+        name: itemForm.name,
+        icon: itemForm.icon,
+        category: itemForm.category === "__custom__"
+          ? (itemForm.customCategory || "").trim().toLowerCase().replace(/\s+/g, "_")
+          : itemForm.category,
+        unit: itemForm.unit === "__custom__" ? (itemForm.customUnit || "").trim() : itemForm.unit,
+      };
+      if (!payload.category) { toast.error("Category required"); return; }
+      if (!payload.unit) { toast.error("Unit required"); return; }
       if (itemDialog.mode === "add") {
-        await api.post("/items", itemForm);
+        await api.post("/items", payload);
         toast.success("Item added");
       } else {
-        await api.put(`/items/${itemDialog.current.id}`, itemForm);
+        await api.put(`/items/${itemDialog.current.id}`, payload);
         toast.success("Item updated");
       }
       setItemDialog({ open: false, mode: "add", current: null });
@@ -675,17 +688,69 @@ export default function AdminDashboard() {
                       <div className="grid grid-cols-2 gap-4">
                         <div>
                           <Label>Category</Label>
-                          <Select value={itemForm.category} onValueChange={(v) => setItemForm({ ...itemForm, category: v })}>
-                            <SelectTrigger className="mt-1.5" data-testid="item-category-select"><SelectValue /></SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="vegetable">Vegetable</SelectItem>
-                              <SelectItem value="fruit">Fruit</SelectItem>
-                            </SelectContent>
-                          </Select>
+                          {itemForm.category === "__custom__" ? (
+                            <Input
+                              autoFocus
+                              value={itemForm.customCategory || ""}
+                              onChange={(e) => setItemForm({ ...itemForm, customCategory: e.target.value })}
+                              placeholder="e.g. spice, dairy"
+                              className="mt-1.5"
+                              data-testid="item-category-custom"
+                            />
+                          ) : (
+                            <Select value={itemForm.category} onValueChange={(v) => setItemForm({ ...itemForm, category: v })}>
+                              <SelectTrigger className="mt-1.5" data-testid="item-category-select"><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="vegetable">Vegetable</SelectItem>
+                                <SelectItem value="fruit">Fruit</SelectItem>
+                                <SelectItem value="leafy_green">Leafy green</SelectItem>
+                                <SelectItem value="root">Root vegetable</SelectItem>
+                                <SelectItem value="herb">Herb</SelectItem>
+                                <SelectItem value="spice">Spice</SelectItem>
+                                <SelectItem value="dairy">Dairy</SelectItem>
+                                <SelectItem value="grocery">Grocery</SelectItem>
+                                <SelectItem value="meat">Meat &amp; Poultry</SelectItem>
+                                <SelectItem value="seafood">Seafood</SelectItem>
+                                <SelectItem value="bakery">Bakery</SelectItem>
+                                <SelectItem value="beverage">Beverage</SelectItem>
+                                <SelectItem value="other">Other</SelectItem>
+                                <SelectItem value="__custom__">+ Custom category…</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          )}
                         </div>
                         <div>
-                          <Label htmlFor="i_unit">Unit</Label>
-                          <Input id="i_unit" value={itemForm.unit} onChange={(e) => setItemForm({ ...itemForm, unit: e.target.value })} className="mt-1.5" data-testid="item-unit-input" placeholder="kg, dozen, piece" />
+                          <Label>Unit</Label>
+                          {itemForm.unit === "__custom__" ? (
+                            <Input
+                              autoFocus
+                              value={itemForm.customUnit || ""}
+                              onChange={(e) => setItemForm({ ...itemForm, customUnit: e.target.value })}
+                              placeholder="e.g. crate, sack"
+                              className="mt-1.5"
+                              data-testid="item-unit-custom"
+                            />
+                          ) : (
+                            <Select value={itemForm.unit} onValueChange={(v) => setItemForm({ ...itemForm, unit: v })}>
+                              <SelectTrigger className="mt-1.5" data-testid="item-unit-select"><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="kg">kg (kilogram)</SelectItem>
+                                <SelectItem value="g">g (gram)</SelectItem>
+                                <SelectItem value="quintal">quintal</SelectItem>
+                                <SelectItem value="dozen">dozen</SelectItem>
+                                <SelectItem value="piece">piece</SelectItem>
+                                <SelectItem value="bundle">bundle</SelectItem>
+                                <SelectItem value="bunch">bunch</SelectItem>
+                                <SelectItem value="packet">packet</SelectItem>
+                                <SelectItem value="box">box</SelectItem>
+                                <SelectItem value="crate">crate</SelectItem>
+                                <SelectItem value="bag">bag</SelectItem>
+                                <SelectItem value="ltr">ltr (litre)</SelectItem>
+                                <SelectItem value="ml">ml</SelectItem>
+                                <SelectItem value="__custom__">+ Custom unit…</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          )}
                         </div>
                       </div>
                       <div>
@@ -714,7 +779,7 @@ export default function AdminDashboard() {
                   {items.map((it) => (
                     <TableRow key={it.id} data-testid={`item-row-${it.name.toLowerCase()}`}>
                       <TableCell className="font-medium"><span className="mr-2 text-lg">{it.icon}</span>{it.name}</TableCell>
-                      <TableCell className="capitalize text-muted-foreground">{it.category}</TableCell>
+                      <TableCell className="capitalize text-muted-foreground">{(it.category || "").replace(/_/g, " ")}</TableCell>
                       <TableCell className="text-muted-foreground">{it.unit}</TableCell>
                       <TableCell className="text-right">
                         <Button variant="ghost" size="sm" onClick={() => openEditItem(it)} data-testid={`edit-item-${it.id}`}><Pencil className="h-3.5 w-3.5" /></Button>

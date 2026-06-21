@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast, Toaster } from "sonner";
-import { Loader2, ShoppingBasket, History, Carrot, Apple, Download } from "lucide-react";
+import { Loader2, ShoppingBasket, History, Carrot, Apple, Download, Receipt } from "lucide-react";
 
 function todayStr() {
   const d = new Date();
@@ -57,8 +57,19 @@ export default function HotelDashboard() {
 
   useEffect(() => { loadAll(); }, []);
 
-  const vegetables = useMemo(() => items.filter((i) => i.category === "vegetable"), [items]);
-  const fruits = useMemo(() => items.filter((i) => i.category === "fruit"), [items]);
+  // Group items by their category dynamically (supports new categories)
+  const itemGroups = useMemo(() => {
+    const groups = new Map();
+    for (const it of items) {
+      const cat = it.category || "other";
+      if (!groups.has(cat)) groups.set(cat, []);
+      groups.get(cat).push(it);
+    }
+    return Array.from(groups.entries()).sort(([a], [b]) => a.localeCompare(b));
+  }, [items]);
+
+  const formatCategory = (c) =>
+    (c || "").replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
 
   const totalLines = useMemo(
     () => Object.values(qty).filter((v) => Number(v) > 0).length,
@@ -116,11 +127,28 @@ export default function HotelDashboard() {
       .then((blob) => {
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
-        a.download = `my_orders.${fmt}`;
+        a.download = `my_orders.${fmt === "xlsx" ? "xlsx" : fmt}`;
         a.click();
         URL.revokeObjectURL(a.href);
       })
       .catch(() => toast.error("Export failed"));
+  };
+
+  const downloadInvoice = (orderId) => {
+    const t = localStorage.getItem("gg_token");
+    fetch(`${API}/orders/${orderId}/invoice.pdf`, {
+      headers: { Authorization: `Bearer ${t}` },
+      credentials: "include",
+    })
+      .then((r) => r.blob())
+      .then((blob) => {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `invoice_${orderId.slice(-6)}.pdf`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+      })
+      .catch(() => toast.error("Invoice download failed"));
   };
 
   const renderItem = (it) => (
@@ -172,35 +200,29 @@ export default function HotelDashboard() {
         {/* Place order */}
         <TabsContent value="place" className="space-y-6">
           <form onSubmit={submitOrder} className="grid grid-cols-1 gap-6 lg:grid-cols-3" data-testid="hotel-order-form">
-            {/* Left: items */}
+            {/* Left: items grouped by category */}
             <div className="space-y-6 lg:col-span-2">
-              <Card className="border-border">
-                <CardHeader className="border-b border-border">
-                  <CardTitle className="flex items-center gap-2 font-serif text-xl font-normal">
-                    <Carrot className="h-4 w-4 text-primary" strokeWidth={1.5} /> Vegetables
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="grid grid-cols-1 gap-2 pt-4 sm:grid-cols-2">
-                  {vegetables.map(renderItem)}
-                  {!vegetables.length && !loading ? (
-                    <div className="col-span-full text-sm text-muted-foreground">No vegetables in catalog.</div>
-                  ) : null}
-                </CardContent>
-              </Card>
-
-              <Card className="border-border">
-                <CardHeader className="border-b border-border">
-                  <CardTitle className="flex items-center gap-2 font-serif text-xl font-normal">
-                    <Apple className="h-4 w-4 text-primary" strokeWidth={1.5} /> Fruits
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="grid grid-cols-1 gap-2 pt-4 sm:grid-cols-2">
-                  {fruits.map(renderItem)}
-                  {!fruits.length && !loading ? (
-                    <div className="col-span-full text-sm text-muted-foreground">No fruits in catalog.</div>
-                  ) : null}
-                </CardContent>
-              </Card>
+              {itemGroups.map(([cat, list]) => (
+                <Card key={cat} className="border-border">
+                  <CardHeader className="border-b border-border">
+                    <CardTitle className="flex items-center gap-2 font-serif text-xl font-normal">
+                      {cat === "fruit"
+                        ? <Apple className="h-4 w-4 text-primary" strokeWidth={1.5} />
+                        : <Carrot className="h-4 w-4 text-primary" strokeWidth={1.5} />}
+                      {formatCategory(cat)}
+                      <span className="ml-1 text-xs font-normal text-muted-foreground">({list.length})</span>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="grid grid-cols-1 gap-2 pt-4 sm:grid-cols-2">
+                    {list.map(renderItem)}
+                  </CardContent>
+                </Card>
+              ))}
+              {!itemGroups.length && !loading ? (
+                <Card className="border-border"><CardContent className="p-6 text-sm text-muted-foreground">
+                  No catalog items yet. Ask the admin to add some.
+                </CardContent></Card>
+              ) : null}
             </div>
 
             {/* Right: summary */}
@@ -271,6 +293,9 @@ export default function HotelDashboard() {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <CardTitle className="font-serif text-xl font-normal">Your order history</CardTitle>
                 <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={() => exportHistory("xlsx")} className="border-border" data-testid="hotel-export-xlsx">
+                    <Download className="mr-1.5 h-4 w-4" strokeWidth={1.5} /> Excel
+                  </Button>
                   <Button variant="outline" size="sm" onClick={() => exportHistory("csv")} className="border-border" data-testid="hotel-export-csv">
                     <Download className="mr-1.5 h-4 w-4" strokeWidth={1.5} /> CSV
                   </Button>
@@ -286,6 +311,7 @@ export default function HotelDashboard() {
                   <TableRow className="bg-[#F7F5F0]">
                     <TableHead>Order Date</TableHead>
                     <TableHead>Items</TableHead>
+                    <TableHead className="text-right">Total</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead>Placed</TableHead>
                     <TableHead className="text-right">Action</TableHead>
@@ -293,30 +319,47 @@ export default function HotelDashboard() {
                 </TableHeader>
                 <TableBody>
                   {orders.length === 0 ? (
-                    <TableRow><TableCell colSpan={5} className="py-8 text-center text-muted-foreground">No orders yet.</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">No orders yet.</TableCell></TableRow>
                   ) : null}
                   {orders.map((o) => (
                     <TableRow key={o.id} data-testid={`order-row-${o.id}`}>
                       <TableCell className="font-mono">{o.order_date}</TableCell>
                       <TableCell>
                         <div className="flex flex-wrap gap-1">
-                          {o.lines.map((ln) => (
-                            <Badge key={ln.item_id} variant="outline" className="border-border bg-secondary text-foreground">
+                          {o.lines.map((ln, idx) => (
+                            <Badge key={(ln.item_id || "") + ln.name + idx} variant="outline" className="border-border bg-secondary text-foreground">
                               {ln.name} <span className="ml-1 font-mono text-muted-foreground">· {ln.quantity}{ln.unit}</span>
                             </Badge>
                           ))}
                         </div>
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        {o.grand_total > 0 ? (
+                          <span className="font-medium" data-testid={`hotel-order-total-${o.id}`}>₹ {o.grand_total.toFixed(2)}</span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground" title="Admin has not set rates yet">Awaiting bill</span>
+                        )}
                       </TableCell>
                       <TableCell><StatusBadge status={o.status} /></TableCell>
                       <TableCell className="text-xs text-muted-foreground">
                         {new Date(o.created_at).toLocaleString()}
                       </TableCell>
                       <TableCell className="text-right">
-                        {o.status === "pending" ? (
-                          <Button variant="ghost" size="sm" onClick={() => cancelOrder(o.id)} data-testid={`cancel-order-${o.id}`} className="text-destructive hover:bg-destructive/10 hover:text-destructive">
-                            Cancel
+                        <div className="flex items-center justify-end gap-1">
+                          <Button
+                            variant="ghost" size="sm" onClick={() => downloadInvoice(o.id)}
+                            data-testid={`hotel-invoice-${o.id}`}
+                            disabled={!o.grand_total}
+                            title={o.grand_total ? "Download invoice PDF" : "Bill not generated yet"}
+                          >
+                            <Receipt className="h-3.5 w-3.5" />
                           </Button>
-                        ) : null}
+                          {o.status === "pending" ? (
+                            <Button variant="ghost" size="sm" onClick={() => cancelOrder(o.id)} data-testid={`cancel-order-${o.id}`} className="text-destructive hover:bg-destructive/10 hover:text-destructive">
+                              Cancel
+                            </Button>
+                          ) : null}
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
