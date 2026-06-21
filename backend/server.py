@@ -89,11 +89,31 @@ class OrderLine(BaseModel):
     unit: str
     category: str
     quantity: float
+    rate: float = 0.0          # price per unit (admin-entered)
+    amount: float = 0.0        # quantity * rate (computed)
 
 class OrderIn(BaseModel):
     order_date: str  # YYYY-MM-DD
     notes: Optional[str] = None
     lines: List[OrderLine]
+
+
+class OrderUpdateIn(BaseModel):
+    lines: Optional[List[OrderLine]] = None
+    notes: Optional[str] = None
+    tax_rate: Optional[float] = None  # percent, e.g. 5
+
+
+def _compute_totals(lines: List[dict], tax_rate: float):
+    subtotal = 0.0
+    for ln in lines:
+        amount = float(ln.get("quantity", 0)) * float(ln.get("rate", 0))
+        ln["amount"] = round(amount, 2)
+        subtotal += amount
+    subtotal = round(subtotal, 2)
+    tax = round(subtotal * float(tax_rate) / 100.0, 2)
+    grand_total = round(subtotal + tax, 2)
+    return subtotal, tax, grand_total
 
 class OrderOut(BaseModel):
     id: str
@@ -104,6 +124,10 @@ class OrderOut(BaseModel):
     status: str
     created_at: str
     lines: List[OrderLine]
+    tax_rate: float = 0.0
+    subtotal: float = 0.0
+    tax: float = 0.0
+    grand_total: float = 0.0
 
 
 # ----- App -----
@@ -232,10 +256,10 @@ async def create_order(payload: OrderIn, user: dict = Depends(get_current_user))
         raise HTTPException(status_code=403, detail="Only hotels can place orders")
     if not payload.lines:
         raise HTTPException(status_code=400, detail="At least one item required")
-    # Filter out zero-quantity lines
-    valid_lines = [ln for ln in payload.lines if ln.quantity > 0]
+    valid_lines = [ln.model_dump() for ln in payload.lines if ln.quantity > 0]
     if not valid_lines:
         raise HTTPException(status_code=400, detail="Add quantity for at least one item")
+    subtotal, tax, grand = _compute_totals(valid_lines, 0.0)
     doc = {
         "hotel_id": user["id"],
         "hotel_name": user.get("hotel_name") or user["name"],
@@ -243,12 +267,26 @@ async def create_order(payload: OrderIn, user: dict = Depends(get_current_user))
         "notes": payload.notes,
         "status": "pending",
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "lines": [ln.model_dump() for ln in valid_lines],
+        "lines": valid_lines,
+        "tax_rate": 0.0,
+        "subtotal": subtotal, "tax": tax, "grand_total": grand,
     }
     result = await db.orders.insert_one(doc)
     doc["id"] = str(result.inserted_id)
     doc.pop("_id", None)
     return doc
+
+
+def _serialize_order(d: dict) -> dict:
+    return {
+        "id": str(d["_id"]), "hotel_id": d["hotel_id"], "hotel_name": d["hotel_name"],
+        "order_date": d["order_date"], "notes": d.get("notes"), "status": d["status"],
+        "created_at": d["created_at"], "lines": d["lines"],
+        "tax_rate": float(d.get("tax_rate") or 0.0),
+        "subtotal": float(d.get("subtotal") or 0.0),
+        "tax": float(d.get("tax") or 0.0),
+        "grand_total": float(d.get("grand_total") or 0.0),
+    }
 
 
 @api.get("/orders", response_model=List[OrderOut])
@@ -272,15 +310,29 @@ async def list_orders(
         query["order_date"] = {"$lte": date_to}
     if status:
         query["status"] = status
-    docs = await db.orders.find(query).sort("created_at", -1).to_list(1000)
-    out = []
-    for d in docs:
-        out.append({
-            "id": str(d["_id"]), "hotel_id": d["hotel_id"], "hotel_name": d["hotel_name"],
-            "order_date": d["order_date"], "notes": d.get("notes"), "status": d["status"],
-            "created_at": d["created_at"], "lines": d["lines"],
-        })
-    return out
+    docs = await db.orders.find(query).sort([("order_date", -1), ("created_at", -1)]).to_list(1000)
+    return [_serialize_order(d) for d in docs]
+
+
+@api.put("/orders/{order_id}", response_model=OrderOut)
+async def update_order(order_id: str, payload: OrderUpdateIn, _: dict = Depends(require_admin)):
+    existing = await db.orders.find_one({"_id": ObjectId(order_id)})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    new_lines = ([ln.model_dump() for ln in payload.lines] if payload.lines is not None
+                 else existing["lines"])
+    tax_rate = float(payload.tax_rate if payload.tax_rate is not None else existing.get("tax_rate") or 0.0)
+    subtotal, tax, grand = _compute_totals(new_lines, tax_rate)
+    updates = {
+        "lines": new_lines, "tax_rate": tax_rate,
+        "subtotal": subtotal, "tax": tax, "grand_total": grand,
+    }
+    if payload.notes is not None:
+        updates["notes"] = payload.notes
+    await db.orders.update_one({"_id": ObjectId(order_id)}, {"$set": updates})
+    doc = await db.orders.find_one({"_id": ObjectId(order_id)})
+    return _serialize_order(doc)
 
 
 @api.patch("/orders/{order_id}/status")
@@ -433,18 +485,21 @@ async def export_orders(
     range_label = f"{date_from or 'all'}_to_{date_to or 'all'}"
     if fmt == "pdf":
         return _pdf_orders(docs, label, date_from, date_to)
+    if fmt == "xlsx":
+        return _xlsx_orders(docs, label, date_from, date_to)
 
     buf = StringIO()
     writer = csv.writer(buf)
     writer.writerow(["Green Groceries - Orders Export"])
     writer.writerow([f"Hotel: {label}", f"From: {date_from or '—'}", f"To: {date_to or '—'}", f"Status: {status or 'all'}"])
     writer.writerow([])
-    writer.writerow(["Order Date", "Hotel", "Item", "Category", "Unit", "Quantity", "Status", "Notes", "Placed At"])
+    writer.writerow(["Order Date", "Hotel", "Item", "Category", "Unit", "Quantity", "Rate", "Amount", "Status", "Notes", "Placed At"])
     for d in docs:
         for ln in d["lines"]:
             writer.writerow([
                 d["order_date"], d["hotel_name"], ln["name"], ln["category"], ln["unit"],
-                ln["quantity"], d["status"], d.get("notes") or "", d["created_at"],
+                ln.get("quantity", 0), ln.get("rate", 0), ln.get("amount", 0),
+                d["status"], d.get("notes") or "", d["created_at"],
             ])
     buf.seek(0)
     filename = f"orders_{label}_{range_label}.csv"
@@ -453,6 +508,223 @@ async def export_orders(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+def _xlsx_orders(docs: List[dict], label: str, date_from, date_to):
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from io import BytesIO
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Orders"
+
+    head_fill = PatternFill("solid", fgColor="1F4A2C")
+    head_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    title_font = Font(name="Calibri", size=14, bold=True, color="1F4A2C")
+    sub_font = Font(name="Calibri", size=10, color="747A76")
+    money_fmt = "#,##0.00"
+    thin = Side(border_style="thin", color="E5E0D8")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    ws["A1"] = "Green Groceries — Orders Report"
+    ws["A1"].font = title_font
+    ws.merge_cells("A1:I1")
+    ws["A2"] = f"Hotel: {label}    From: {date_from or '—'}    To: {date_to or '—'}"
+    ws["A2"].font = sub_font
+    ws.merge_cells("A2:I2")
+
+    headers = ["Order Date", "Hotel", "Item", "Unit", "Quantity", "Rate", "Amount", "Status", "Notes"]
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(row=4, column=col, value=h)
+        c.font = head_font
+        c.fill = head_fill
+        c.alignment = Alignment(horizontal="left", vertical="center")
+        c.border = border
+
+    row = 5
+    grand_total = 0.0
+    for d in docs:
+        for ln in d["lines"]:
+            qty = float(ln.get("quantity", 0))
+            rate = float(ln.get("rate", 0))
+            amt = float(ln.get("amount", qty * rate))
+            grand_total += amt
+            values = [d["order_date"], d["hotel_name"], ln["name"], ln["unit"],
+                      qty, rate, amt, d["status"], d.get("notes") or ""]
+            for col, v in enumerate(values, 1):
+                c = ws.cell(row=row, column=col, value=v)
+                c.border = border
+                if col in (5, 6, 7):
+                    c.number_format = money_fmt
+                    c.alignment = Alignment(horizontal="right")
+            row += 1
+
+    # Totals row
+    tot_row = row + 1
+    ws.cell(row=tot_row, column=6, value="Grand Total").font = Font(bold=True)
+    c = ws.cell(row=tot_row, column=7, value=round(grand_total, 2))
+    c.font = Font(bold=True, color="1F4A2C")
+    c.number_format = money_fmt
+
+    widths = [13, 22, 18, 8, 11, 11, 14, 12, 30]
+    for i, w in enumerate(widths, 1):
+        from openpyxl.utils import get_column_letter
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A5"
+
+    out = BytesIO()
+    wb.save(out)
+    out.seek(0)
+    filename = f"orders_{label}.xlsx"
+    return StreamingResponse(
+        out,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ----- Invoice PDF -----
+@api.get("/orders/{order_id}/invoice.pdf")
+async def order_invoice(order_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.orders.find_one({"_id": ObjectId(order_id)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if user["role"] == "hotel" and doc["hotel_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Not your order")
+    hotel = await db.users.find_one({"_id": ObjectId(doc["hotel_id"])}) if doc.get("hotel_id") else None
+    return _pdf_invoice(doc, hotel or {})
+
+
+def _pdf_invoice(order: dict, hotel: dict):
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from io import BytesIO
+
+    out = BytesIO()
+    doc_pdf = SimpleDocTemplate(out, pagesize=A4, leftMargin=18*mm, rightMargin=18*mm,
+                                topMargin=18*mm, bottomMargin=18*mm)
+    styles = getSampleStyleSheet()
+    brand = ParagraphStyle("brand", parent=styles["Heading1"], fontSize=22,
+                           textColor=colors.HexColor("#1F4A2C"), leading=24)
+    sub = ParagraphStyle("sub", parent=styles["Normal"], textColor=colors.HexColor("#747A76"),
+                         fontSize=9, leading=12)
+    h2 = ParagraphStyle("h2", parent=styles["Heading2"], fontSize=12,
+                        textColor=colors.HexColor("#1F4A2C"))
+    body = ParagraphStyle("body", parent=styles["Normal"], fontSize=10, leading=13)
+
+    inv_no = f"GG-{order.get('order_date','').replace('-','')}-{str(order.get('_id') or order.get('id'))[-6:]}"
+    issued = datetime.now(timezone.utc).strftime("%d %b %Y")
+
+    elems = []
+    # Header band
+    header_tbl = Table([
+        [
+            Paragraph("Green Groceries", brand),
+            Paragraph(
+                f"<b>INVOICE</b><br/>"
+                f"Invoice No: <b>{inv_no}</b><br/>"
+                f"Order Date: <b>{order.get('order_date','—')}</b><br/>"
+                f"Issued: {issued}", body),
+        ]
+    ], colWidths=[100*mm, 70*mm])
+    header_tbl.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+    ]))
+    elems.append(header_tbl)
+    elems.append(Spacer(1, 4*mm))
+    elems.append(Paragraph("Hotel produce ordering · Daily mandi sheet", sub))
+    elems.append(Spacer(1, 8*mm))
+
+    # Bill to / from
+    bill_to = (
+        f"<b>{order.get('hotel_name','—')}</b><br/>"
+        f"{hotel.get('name','') or ''}<br/>"
+        f"{hotel.get('email','') or ''}<br/>"
+        f"{hotel.get('phone','') or ''}<br/>"
+        f"{hotel.get('address','') or ''}"
+    )
+    bill_block = Table([
+        [Paragraph("BILL TO", h2), Paragraph("FROM", h2)],
+        [Paragraph(bill_to, body),
+         Paragraph("Green Groceries<br/>Wholesale Fruits & Vegetables<br/>orders@greengroceries.com", body)],
+    ], colWidths=[85*mm, 85*mm])
+    bill_block.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    elems.append(bill_block)
+    elems.append(Spacer(1, 8*mm))
+
+    # Items table
+    data = [["#", "Product", "Unit", "Qty", "Rate", "Amount"]]
+    subtotal = 0.0
+    for i, ln in enumerate(order["lines"], 1):
+        qty = float(ln.get("quantity", 0))
+        rate = float(ln.get("rate", 0))
+        amount = float(ln.get("amount", qty * rate))
+        subtotal += amount
+        data.append([
+            str(i), ln["name"], ln.get("unit", ""),
+            f"{qty:g}", f"{rate:,.2f}", f"{amount:,.2f}",
+        ])
+
+    t = Table(data, repeatRows=1, hAlign="LEFT",
+              colWidths=[10*mm, 70*mm, 18*mm, 22*mm, 25*mm, 30*mm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4A2C")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("ALIGN", (3, 0), (-1, -1), "RIGHT"),
+        ("ALIGN", (0, 0), (0, -1), "CENTER"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+         [colors.HexColor("#FFFFFF"), colors.HexColor("#F7F5F0")]),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#E5E0D8")),
+        ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    elems.append(t)
+    elems.append(Spacer(1, 4*mm))
+
+    # Totals box
+    tax_rate = float(order.get("tax_rate") or 0)
+    tax = float(order.get("tax") or round(subtotal * tax_rate / 100.0, 2))
+    grand = float(order.get("grand_total") or round(subtotal + tax, 2))
+
+    totals_data = [
+        ["Subtotal", f"₹ {subtotal:,.2f}"],
+        [f"Tax ({tax_rate:g}%)", f"₹ {tax:,.2f}"],
+        ["Grand Total", f"₹ {grand:,.2f}"],
+    ]
+    totals = Table(totals_data, colWidths=[40*mm, 40*mm], hAlign="RIGHT")
+    totals.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "RIGHT"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("TEXTCOLOR", (0, 2), (-1, 2), colors.HexColor("#1F4A2C")),
+        ("FONTNAME", (0, 2), (-1, 2), "Helvetica-Bold"),
+        ("LINEABOVE", (0, 2), (-1, 2), 0.8, colors.HexColor("#1F4A2C")),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    elems.append(totals)
+    elems.append(Spacer(1, 10*mm))
+
+    if order.get("notes"):
+        elems.append(Paragraph(f"<b>Notes:</b> {order['notes']}", sub))
+        elems.append(Spacer(1, 4*mm))
+
+    elems.append(Paragraph(
+        "Thank you for choosing Green Groceries. Payment due within 7 days.",
+        ParagraphStyle("foot", parent=styles["Normal"], fontSize=9,
+                       textColor=colors.HexColor("#747A76"), alignment=1)))
+
+    doc_pdf.build(elems)
+    out.seek(0)
+    filename = f"invoice_{inv_no}.pdf"
+    return StreamingResponse(out, media_type="application/pdf",
+                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 def _pdf_purchase_sheet(sheet: dict):

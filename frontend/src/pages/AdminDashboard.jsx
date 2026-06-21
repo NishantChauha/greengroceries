@@ -15,7 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast, Toaster } from "sonner";
 import {
   LayoutDashboard, ListOrdered, ClipboardList, Box, Hotel, Download,
-  Plus, Trash2, Pencil, Loader2, KeyRound, BarChart3,
+  Plus, Trash2, Pencil, Loader2, KeyRound, BarChart3, Receipt, FileSpreadsheet,
 } from "lucide-react";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip,
@@ -75,6 +75,11 @@ export default function AdminDashboard() {
   // Orders filter
   const [ordersFilter, setOrdersFilter] = useState("");
   const [hotelFilterId, setHotelFilterId] = useState("all");
+  const [ordersDateFrom, setOrdersDateFrom] = useState("");
+  const [ordersDateTo, setOrdersDateTo] = useState("");
+
+  // Edit order dialog
+  const [editOrder, setEditOrder] = useState(null); // {order} or null
 
   // Items dialog
   const [itemDialog, setItemDialog] = useState({ open: false, mode: "add", current: null });
@@ -147,6 +152,8 @@ export default function AdminDashboard() {
   const filteredOrders = useMemo(() => {
     let list = orders;
     if (hotelFilterId !== "all") list = list.filter((o) => o.hotel_id === hotelFilterId);
+    if (ordersDateFrom) list = list.filter((o) => o.order_date >= ordersDateFrom);
+    if (ordersDateTo) list = list.filter((o) => o.order_date <= ordersDateTo);
     if (!ordersFilter) return list;
     const q = ordersFilter.toLowerCase();
     return list.filter((o) =>
@@ -154,14 +161,14 @@ export default function AdminDashboard() {
       o.order_date.includes(q) ||
       o.status.includes(q)
     );
-  }, [orders, ordersFilter, hotelFilterId]);
+  }, [orders, ordersFilter, hotelFilterId, ordersDateFrom, ordersDateTo]);
 
   const exportOrders = (fmt) => {
     const qs = new URLSearchParams({ fmt });
     if (hotelFilterId !== "all") qs.set("hotel_id", hotelFilterId);
+    if (ordersDateFrom) qs.set("date_from", ordersDateFrom);
+    if (ordersDateTo) qs.set("date_to", ordersDateTo);
     const t = localStorage.getItem("gg_token");
-    const url = `${API}/orders/export?${qs.toString()}${t ? `&_=${encodeURIComponent(t)}` : ""}`;
-    // Use fetch + blob so Authorization header is sent (window.open won't carry the header)
     fetch(`${API}/orders/export?${qs.toString()}`, {
       headers: { Authorization: `Bearer ${t}` },
       credentials: "include",
@@ -171,11 +178,45 @@ export default function AdminDashboard() {
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
         const label = hotelFilterId === "all" ? "all-hotels" : "filtered";
-        a.download = `orders_${label}.${fmt}`;
+        a.download = `orders_${label}.${fmt === "xlsx" ? "xlsx" : fmt}`;
         a.click();
         URL.revokeObjectURL(a.href);
       })
       .catch(() => toast.error("Export failed"));
+  };
+
+  const downloadInvoice = (orderId) => {
+    const t = localStorage.getItem("gg_token");
+    fetch(`${API}/orders/${orderId}/invoice.pdf`, {
+      headers: { Authorization: `Bearer ${t}` },
+      credentials: "include",
+    })
+      .then((r) => r.blob())
+      .then((blob) => {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `invoice_${orderId.slice(-6)}.pdf`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+      })
+      .catch(() => toast.error("Invoice download failed"));
+  };
+
+  const saveOrderEdit = async () => {
+    if (!editOrder) return;
+    try {
+      const { data } = await api.put(`/orders/${editOrder.id}`, {
+        lines: editOrder.lines,
+        notes: editOrder.notes,
+        tax_rate: Number(editOrder.tax_rate) || 0,
+      });
+      setOrders(orders.map((o) => (o.id === data.id ? data : o)));
+      setEditOrder(null);
+      toast.success("Order updated", { description: `Grand total: ₹ ${data.grand_total.toFixed(2)}` });
+      loadStats();
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail) || e.message);
+    }
   };
 
   // Item CRUD
@@ -267,6 +308,120 @@ export default function AdminDashboard() {
   return (
     <AppShell nav={[]}>
       <Toaster richColors position="top-right" />
+
+      {/* Edit order dialog (admin enters rates and tax) */}
+      <Dialog open={!!editOrder} onOpenChange={(o) => { if (!o) setEditOrder(null); }}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl" data-testid="edit-order-dialog">
+          <DialogHeader>
+            <DialogTitle className="font-serif text-2xl font-normal">
+              Edit order — {editOrder?.hotel_name}
+            </DialogTitle>
+          </DialogHeader>
+          {editOrder ? (() => {
+            const sub = (editOrder.lines || []).reduce(
+              (s, ln) => s + (Number(ln.quantity) || 0) * (Number(ln.rate) || 0),
+              0,
+            );
+            const tr = Number(editOrder.tax_rate) || 0;
+            const tx = sub * tr / 100;
+            const gt = sub + tx;
+            return (
+              <div className="space-y-4 py-2">
+                <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">
+                  Order date: <span className="font-mono text-foreground">{editOrder.order_date}</span>
+                </div>
+
+                <div className="rounded-md border border-border">
+                  <div className="grid grid-cols-12 gap-2 bg-[#F7F5F0] px-3 py-2 text-[11px] uppercase tracking-wider text-muted-foreground">
+                    <div className="col-span-4">Item</div>
+                    <div className="col-span-2 text-right">Qty</div>
+                    <div className="col-span-2 text-right">Unit</div>
+                    <div className="col-span-2 text-right">Rate (₹)</div>
+                    <div className="col-span-2 text-right">Amount</div>
+                  </div>
+                  {editOrder.lines.map((ln, idx) => {
+                    const amt = (Number(ln.quantity) || 0) * (Number(ln.rate) || 0);
+                    return (
+                      <div key={idx} className="grid grid-cols-12 items-center gap-2 border-t border-border px-3 py-2" data-testid={`edit-line-${idx}`}>
+                        <div className="col-span-4 text-sm font-medium">{ln.name}</div>
+                        <div className="col-span-2">
+                          <Input
+                            type="number" min={0} step="0.1"
+                            value={ln.quantity}
+                            onChange={(e) => {
+                              const lines = [...editOrder.lines];
+                              lines[idx] = { ...ln, quantity: Number(e.target.value) };
+                              setEditOrder({ ...editOrder, lines });
+                            }}
+                            className="text-right font-mono"
+                            data-testid={`edit-qty-${idx}`}
+                          />
+                        </div>
+                        <div className="col-span-2 text-right text-xs text-muted-foreground">{ln.unit}</div>
+                        <div className="col-span-2">
+                          <Input
+                            type="number" min={0} step="0.01"
+                            value={ln.rate ?? 0}
+                            onChange={(e) => {
+                              const lines = [...editOrder.lines];
+                              lines[idx] = { ...ln, rate: Number(e.target.value) };
+                              setEditOrder({ ...editOrder, lines });
+                            }}
+                            className="text-right font-mono"
+                            placeholder="0"
+                            data-testid={`edit-rate-${idx}`}
+                          />
+                        </div>
+                        <div className="col-span-2 text-right font-mono text-sm" data-testid={`edit-amount-${idx}`}>
+                          ₹ {amt.toFixed(2)}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <div>
+                    <Label htmlFor="tax_rate">Tax %</Label>
+                    <Input
+                      id="tax_rate" type="number" min={0} step="0.5"
+                      value={editOrder.tax_rate ?? 0}
+                      onChange={(e) => setEditOrder({ ...editOrder, tax_rate: Number(e.target.value) })}
+                      className="mt-1.5 font-mono"
+                      data-testid="edit-tax-rate"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <Label htmlFor="edit_notes">Notes</Label>
+                    <Input
+                      id="edit_notes"
+                      value={editOrder.notes ?? ""}
+                      onChange={(e) => setEditOrder({ ...editOrder, notes: e.target.value })}
+                      className="mt-1.5"
+                      placeholder="Delivery instructions…"
+                      data-testid="edit-notes"
+                    />
+                  </div>
+                </div>
+
+                <div className="rounded-md border border-dashed border-border bg-secondary p-3 font-mono text-sm">
+                  <div className="flex justify-between"><span className="text-muted-foreground">Subtotal</span><span data-testid="edit-subtotal">₹ {sub.toFixed(2)}</span></div>
+                  <div className="flex justify-between"><span className="text-muted-foreground">Tax ({tr}%)</span><span data-testid="edit-tax">₹ {tx.toFixed(2)}</span></div>
+                  <div className="mt-1 flex justify-between border-t border-border pt-1.5 text-base font-semibold text-primary">
+                    <span>Grand Total</span><span data-testid="edit-grand-total">₹ {gt.toFixed(2)}</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })() : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditOrder(null)} data-testid="edit-cancel-button">Cancel</Button>
+            <Button onClick={saveOrderEdit} className="bg-primary text-primary-foreground hover:bg-[#163820]" data-testid="edit-save-button">
+              Save & recalculate
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <div className="mb-8">
         <div className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">Admin control room</div>
@@ -381,7 +536,7 @@ export default function AdminDashboard() {
                 <CardTitle className="font-serif text-xl font-normal">All hotel orders</CardTitle>
                 <div className="flex flex-wrap items-center gap-2">
                   <Select value={hotelFilterId} onValueChange={setHotelFilterId}>
-                    <SelectTrigger className="w-56" data-testid="orders-hotel-filter">
+                    <SelectTrigger className="w-48" data-testid="orders-hotel-filter">
                       <SelectValue placeholder="All hotels" />
                     </SelectTrigger>
                     <SelectContent>
@@ -392,12 +547,31 @@ export default function AdminDashboard() {
                     </SelectContent>
                   </Select>
                   <Input
+                    type="date"
+                    value={ordersDateFrom}
+                    onChange={(e) => setOrdersDateFrom(e.target.value)}
+                    className="w-40"
+                    placeholder="From"
+                    data-testid="orders-date-from"
+                  />
+                  <Input
+                    type="date"
+                    value={ordersDateTo}
+                    onChange={(e) => setOrdersDateTo(e.target.value)}
+                    className="w-40"
+                    placeholder="To"
+                    data-testid="orders-date-to"
+                  />
+                  <Input
                     placeholder="Search…"
                     value={ordersFilter}
                     onChange={(e) => setOrdersFilter(e.target.value)}
-                    className="w-44"
+                    className="w-36"
                     data-testid="orders-search-input"
                   />
+                  <Button variant="outline" size="sm" onClick={() => exportOrders("xlsx")} className="border-border" data-testid="orders-export-xlsx">
+                    <FileSpreadsheet className="mr-1.5 h-4 w-4" strokeWidth={1.5} /> Excel
+                  </Button>
                   <Button variant="outline" size="sm" onClick={() => exportOrders("csv")} className="border-border" data-testid="orders-export-csv">
                     <Download className="mr-1.5 h-4 w-4" strokeWidth={1.5} /> CSV
                   </Button>
@@ -414,13 +588,14 @@ export default function AdminDashboard() {
                     <TableHead>Hotel</TableHead>
                     <TableHead>Date</TableHead>
                     <TableHead>Items</TableHead>
+                    <TableHead className="text-right">Total</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead className="text-right">Action</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filteredOrders.length === 0 ? (
-                    <TableRow><TableCell colSpan={5} className="py-8 text-center text-muted-foreground">No orders.</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">No orders.</TableCell></TableRow>
                   ) : null}
                   {filteredOrders.map((o) => (
                     <TableRow key={o.id} data-testid={`admin-order-row-${o.id}`}>
@@ -431,25 +606,40 @@ export default function AdminDashboard() {
                       <TableCell className="font-mono">{o.order_date}</TableCell>
                       <TableCell>
                         <div className="flex flex-wrap gap-1">
-                          {o.lines.map((ln) => (
-                            <Badge key={ln.item_id + ln.name} variant="outline" className="border-border bg-secondary">
+                          {o.lines.map((ln, idx) => (
+                            <Badge key={(ln.item_id || "") + ln.name + idx} variant="outline" className="border-border bg-secondary">
                               {ln.name} <span className="ml-1 font-mono text-muted-foreground">· {ln.quantity}{ln.unit}</span>
                             </Badge>
                           ))}
                         </div>
                       </TableCell>
+                      <TableCell className="text-right font-mono">
+                        {o.grand_total > 0 ? (
+                          <span className="font-medium" data-testid={`order-total-${o.id}`}>₹ {o.grand_total.toFixed(2)}</span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">Set rates →</span>
+                        )}
+                      </TableCell>
                       <TableCell><StatusBadge status={o.status} /></TableCell>
                       <TableCell className="text-right">
-                        <Select value={o.status} onValueChange={(v) => setStatus(o.id, v)}>
-                          <SelectTrigger className="ml-auto w-36" data-testid={`status-select-${o.id}`}>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="pending">Pending</SelectItem>
-                            <SelectItem value="delivered">Delivered</SelectItem>
-                            <SelectItem value="cancelled">Cancelled</SelectItem>
-                          </SelectContent>
-                        </Select>
+                        <div className="flex items-center justify-end gap-0.5">
+                          <Button variant="ghost" size="sm" onClick={() => setEditOrder({ ...o, lines: o.lines.map(l => ({ ...l })) })} data-testid={`edit-order-${o.id}`} title="Edit rates & quantities">
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={() => downloadInvoice(o.id)} data-testid={`invoice-order-${o.id}`} title="Download invoice PDF" disabled={!o.grand_total}>
+                            <Receipt className="h-3.5 w-3.5" />
+                          </Button>
+                          <Select value={o.status} onValueChange={(v) => setStatus(o.id, v)}>
+                            <SelectTrigger className="ml-1 w-32" data-testid={`status-select-${o.id}`}>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="pending">Pending</SelectItem>
+                              <SelectItem value="delivered">Delivered</SelectItem>
+                              <SelectItem value="cancelled">Cancelled</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
