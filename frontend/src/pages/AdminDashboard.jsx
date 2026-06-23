@@ -19,7 +19,7 @@ import {
 import { toast, Toaster } from "sonner";
 import {
   LayoutDashboard, ListOrdered, ClipboardList, Box, Hotel, Download,
-  Plus, Trash2, Pencil, Loader2, KeyRound, BarChart3, Receipt, FileSpreadsheet, FileText,
+  Plus, Trash2, Pencil, Loader2, KeyRound, BarChart3, Receipt, FileSpreadsheet, FileText, IndianRupee, MessageCircle,
 } from "lucide-react";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip,
@@ -318,6 +318,25 @@ export default function AdminDashboard() {
       toast.success("Hotel removed");
     } catch (e) { toast.error(formatApiError(e.response?.data?.detail) || e.message); }
   };
+  // Rates per hotel
+  const [ratesDialog, setRatesDialog] = useState({ open: false, hotel: null, rates: {} });
+  const openRatesDialog = async (h) => {
+    try {
+      const { data } = await api.get(`/hotels/${h.id}/rates`);
+      setRatesDialog({ open: true, hotel: h, rates: { ...(data.rate_overrides || {}) } });
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail) || e.message);
+    }
+  };
+  const saveRates = async () => {
+    try {
+      await api.put(`/hotels/${ratesDialog.hotel.id}/rates`, { rate_overrides: ratesDialog.rates });
+      toast.success("Rates saved", { description: `Overrides for ${ratesDialog.hotel.hotel_name}` });
+      setRatesDialog({ open: false, hotel: null, rates: {} });
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail) || e.message);
+    }
+  };
   const copyHotelPwd = async () => {
     try {
       await navigator.clipboard.writeText(`${hotelForm.email || hotelDialog.current?.email}  /  ${hotelForm.password}`);
@@ -327,9 +346,87 @@ export default function AdminDashboard() {
     }
   };
 
+  // WhatsApp share for an order's bill
+  const shareOnWhatsApp = (order, kind) => {
+    const h = hotels.find((x) => x.id === order.hotel_id);
+    const phone = (h?.phone || "").replace(/[^\d]/g, "");
+    const lineList = order.lines
+      .map((ln, i) => `${i + 1}. ${ln.name} — ${ln.quantity}${ln.unit}`)
+      .join("\n");
+    const isInvoice = kind === "invoice";
+    const total = isInvoice && order.grand_total > 0
+      ? `\n\n*Grand Total: ₹ ${order.grand_total.toFixed(2)}*` : "";
+    const heading = isInvoice ? "Invoice (with prices)" : "Inventory bill (delivery challan)";
+    const msg = `Hello ${order.hotel_name},\n\n*${heading}* — Order date: ${order.order_date}\n\n${lineList}${total}\n\nAttaching the PDF in this chat 📎\n— Green Groceries`;
+    const url = `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`;
+    downloadBill(order.id, kind); // auto-download so admin can drag into WhatsApp
+    window.open(url, "_blank", "noopener");
+  };
+
   return (
     <AppShell nav={[]}>
       <Toaster richColors position="top-right" />
+
+      {/* Rates override dialog (per hotel) */}
+      <Dialog open={ratesDialog.open} onOpenChange={(o) => { if (!o) setRatesDialog({ open: false, hotel: null, rates: {} }); }}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl" data-testid="rates-dialog">
+          <DialogHeader>
+            <DialogTitle className="font-serif text-2xl font-normal">
+              Rate overrides — {ratesDialog.hotel?.hotel_name}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <p className="text-sm text-muted-foreground">
+              Leave a field blank to use the catalog default rate. Any positive value here becomes
+              the hotel-specific rate auto-filled on new orders.
+            </p>
+            <div className="rounded-md border border-border">
+              <div className="grid grid-cols-12 gap-2 bg-[#F7F5F0] px-3 py-2 text-[11px] uppercase tracking-wider text-muted-foreground">
+                <div className="col-span-6">Item</div>
+                <div className="col-span-3 text-right">Catalog rate</div>
+                <div className="col-span-3 text-right">This hotel pays</div>
+              </div>
+              {items.map((it) => {
+                const ov = ratesDialog.rates[it.id];
+                return (
+                  <div key={it.id} className="grid grid-cols-12 items-center gap-2 border-t border-border px-3 py-2">
+                    <div className="col-span-6 text-sm">
+                      <span className="mr-2 text-base">{it.icon}</span>
+                      <span className="font-medium">{it.name}</span>
+                      <span className="ml-2 text-xs text-muted-foreground">/ {it.unit}</span>
+                    </div>
+                    <div className="col-span-3 text-right font-mono text-xs text-muted-foreground">
+                      {it.default_rate > 0 ? `₹ ${Number(it.default_rate).toFixed(2)}` : "—"}
+                    </div>
+                    <div className="col-span-3">
+                      <Input
+                        type="number" min={0} step="0.01"
+                        value={ov ?? ""}
+                        placeholder={it.default_rate > 0 ? String(it.default_rate) : "0"}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          const next = { ...ratesDialog.rates };
+                          if (v === "" || Number(v) === 0) delete next[it.id];
+                          else next[it.id] = Number(v);
+                          setRatesDialog({ ...ratesDialog, rates: next });
+                        }}
+                        className="text-right font-mono"
+                        data-testid={`rate-override-${it.name.toLowerCase()}`}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRatesDialog({ open: false, hotel: null, rates: {} })}>Cancel</Button>
+            <Button onClick={saveRates} className="bg-primary text-primary-foreground hover:bg-[#163820]" data-testid="rates-save-button">
+              Save overrides
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Edit order dialog (admin enters rates and tax) */}
       <Dialog open={!!editOrder} onOpenChange={(o) => { if (!o) setEditOrder(null); }}>
@@ -673,6 +770,24 @@ export default function AdminDashboard() {
                                   <span className="text-[11px] text-muted-foreground">{o.grand_total ? `With prices · ₹ ${o.grand_total.toFixed(2)}` : "Set rates first"}</span>
                                 </div>
                               </DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuLabel className="text-xs uppercase tracking-wider text-muted-foreground">
+                                Share on WhatsApp
+                              </DropdownMenuLabel>
+                              <DropdownMenuItem onClick={() => shareOnWhatsApp(o, "inventory")} data-testid={`wa-inventory-${o.id}`}>
+                                <MessageCircle className="mr-2 h-4 w-4 text-[#25D366]" />
+                                <div className="flex flex-col">
+                                  <span>WhatsApp inventory</span>
+                                  <span className="text-[11px] text-muted-foreground">Opens chat + downloads PDF</span>
+                                </div>
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => shareOnWhatsApp(o, "invoice")} disabled={!o.grand_total} data-testid={`wa-invoice-${o.id}`}>
+                                <MessageCircle className="mr-2 h-4 w-4 text-[#25D366]" />
+                                <div className="flex flex-col">
+                                  <span>WhatsApp invoice</span>
+                                  <span className="text-[11px] text-muted-foreground">{o.grand_total ? "Message + PDF attach" : "Set rates first"}</span>
+                                </div>
+                              </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
                           <Select value={o.status} onValueChange={(v) => setStatus(o.id, v)}>
@@ -947,6 +1062,9 @@ export default function AdminDashboard() {
                       <TableCell className="text-muted-foreground">{h.phone || "—"}</TableCell>
                       <TableCell className="text-muted-foreground">{h.address || "—"}</TableCell>
                       <TableCell className="text-right">
+                        <Button variant="ghost" size="sm" onClick={() => openRatesDialog(h)} data-testid={`rates-hotel-${h.id}`} title="Per-hotel rate overrides">
+                          <IndianRupee className="h-3.5 w-3.5" />
+                        </Button>
                         <Button variant="ghost" size="sm" onClick={() => openResetHotel(h)} data-testid={`reset-hotel-${h.id}`} title="Reset password">
                           <KeyRound className="h-3.5 w-3.5" />
                         </Button>

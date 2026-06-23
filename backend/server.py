@@ -264,17 +264,22 @@ async def create_order(payload: OrderIn, user: dict = Depends(get_current_user))
     if not valid_lines:
         raise HTTPException(status_code=400, detail="Add quantity for at least one item")
 
-    # Auto-fill rate from each item's default_rate when the hotel didn't enter one
-    catalog = {}
+    # Auto-fill rate: prefer hotel-specific override, fall back to item default_rate
+    overrides = (user.get("rate_overrides") or {})
+    item_default_cache: dict = {}
     for ln in valid_lines:
         if float(ln.get("rate") or 0) == 0 and ln.get("item_id"):
-            try:
-                if ln["item_id"] not in catalog:
-                    it = await db.items.find_one({"_id": ObjectId(ln["item_id"])})
-                    catalog[ln["item_id"]] = float((it or {}).get("default_rate") or 0)
-                ln["rate"] = catalog[ln["item_id"]]
-            except Exception:
-                pass
+            iid = ln["item_id"]
+            r = float(overrides.get(iid) or 0)
+            if r == 0:
+                if iid not in item_default_cache:
+                    try:
+                        it = await db.items.find_one({"_id": ObjectId(iid)})
+                        item_default_cache[iid] = float((it or {}).get("default_rate") or 0)
+                    except Exception:
+                        item_default_cache[iid] = 0.0
+                r = item_default_cache[iid]
+            ln["rate"] = r
 
     subtotal, tax, grand = _compute_totals(valid_lines, 0.0)
     doc = {
@@ -294,15 +299,20 @@ async def create_order(payload: OrderIn, user: dict = Depends(get_current_user))
     return doc
 
 
-def _serialize_order(d: dict) -> dict:
+def _serialize_order(d: dict, user: Optional[dict] = None) -> dict:
+    # Hotels only see priced totals after the order is marked Delivered.
+    hide_money = bool(user and user.get("role") == "hotel" and d.get("status") != "delivered")
+    lines = d["lines"]
+    if hide_money:
+        lines = [{**ln, "rate": 0.0, "amount": 0.0} for ln in lines]
     return {
         "id": str(d["_id"]), "hotel_id": d["hotel_id"], "hotel_name": d["hotel_name"],
         "order_date": d["order_date"], "notes": d.get("notes"), "status": d["status"],
-        "created_at": d["created_at"], "lines": d["lines"],
-        "tax_rate": float(d.get("tax_rate") or 0.0),
-        "subtotal": float(d.get("subtotal") or 0.0),
-        "tax": float(d.get("tax") or 0.0),
-        "grand_total": float(d.get("grand_total") or 0.0),
+        "created_at": d["created_at"], "lines": lines,
+        "tax_rate": 0.0 if hide_money else float(d.get("tax_rate") or 0.0),
+        "subtotal": 0.0 if hide_money else float(d.get("subtotal") or 0.0),
+        "tax": 0.0 if hide_money else float(d.get("tax") or 0.0),
+        "grand_total": 0.0 if hide_money else float(d.get("grand_total") or 0.0),
     }
 
 
@@ -328,7 +338,7 @@ async def list_orders(
     if status:
         query["status"] = status
     docs = await db.orders.find(query).sort([("order_date", -1), ("created_at", -1)]).to_list(1000)
-    return [_serialize_order(d) for d in docs]
+    return [_serialize_order(d, user) for d in docs]
 
 
 @api.put("/orders/{order_id}", response_model=OrderOut)
@@ -618,8 +628,11 @@ async def order_invoice(order_id: str, user: dict = Depends(get_current_user)):
     doc = await db.orders.find_one({"_id": ObjectId(order_id)})
     if not doc:
         raise HTTPException(status_code=404, detail="Order not found")
-    if user["role"] == "hotel" and doc["hotel_id"] != user["id"]:
-        raise HTTPException(status_code=403, detail="Not your order")
+    if user["role"] == "hotel":
+        if doc["hotel_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="Not your order")
+        if doc.get("status") != "delivered":
+            raise HTTPException(status_code=403, detail="Invoice will be available once the order is delivered")
     hotel = await db.users.find_one({"_id": ObjectId(doc["hotel_id"])}) if doc.get("hotel_id") else None
     return _pdf_bill(doc, hotel or {}, with_prices=True)
 
@@ -1008,6 +1021,39 @@ async def delete_hotel(hotel_id: str, _: dict = Depends(require_admin)):
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Hotel not found")
     return {"ok": True}
+
+
+class RateOverridesIn(BaseModel):
+    rate_overrides: dict  # {item_id_str: rate_float}
+
+
+@api.get("/hotels/{hotel_id}/rates")
+async def get_hotel_rates(hotel_id: str, _: dict = Depends(require_admin)):
+    hotel = await db.users.find_one({"_id": ObjectId(hotel_id), "role": "hotel"})
+    if not hotel:
+        raise HTTPException(status_code=404, detail="Hotel not found")
+    return {"rate_overrides": hotel.get("rate_overrides") or {}}
+
+
+@api.put("/hotels/{hotel_id}/rates")
+async def set_hotel_rates(hotel_id: str, payload: RateOverridesIn, _: dict = Depends(require_admin)):
+    hotel = await db.users.find_one({"_id": ObjectId(hotel_id), "role": "hotel"})
+    if not hotel:
+        raise HTTPException(status_code=404, detail="Hotel not found")
+    # Drop zero / non-numeric entries; keep only valid positive overrides
+    cleaned = {}
+    for k, v in (payload.rate_overrides or {}).items():
+        try:
+            f = float(v)
+            if f > 0:
+                cleaned[str(k)] = round(f, 2)
+        except (TypeError, ValueError):
+            continue
+    await db.users.update_one(
+        {"_id": ObjectId(hotel_id)},
+        {"$set": {"rate_overrides": cleaned}},
+    )
+    return {"ok": True, "rate_overrides": cleaned}
 
 
 @api.get("/hotels")

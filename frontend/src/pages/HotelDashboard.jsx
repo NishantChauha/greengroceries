@@ -339,10 +339,14 @@ export default function HotelDashboard() {
                         </div>
                       </TableCell>
                       <TableCell className="text-right font-mono">
-                        {o.grand_total > 0 ? (
+                        {o.status === "delivered" && o.grand_total > 0 ? (
                           <span className="font-medium" data-testid={`hotel-order-total-${o.id}`}>₹ {o.grand_total.toFixed(2)}</span>
+                        ) : o.status === "delivered" ? (
+                          <span className="text-xs text-muted-foreground">No charge</span>
                         ) : (
-                          <span className="text-xs text-muted-foreground" title="Admin has not set rates yet">Awaiting bill</span>
+                          <span className="text-xs text-muted-foreground" title="Bill is shown after the order is marked Delivered">
+                            Hidden until delivered
+                          </span>
                         )}
                       </TableCell>
                       <TableCell><StatusBadge status={o.status} /></TableCell>
@@ -369,11 +373,15 @@ export default function HotelDashboard() {
                                   <span className="text-[11px] text-muted-foreground">Items & quantity only</span>
                                 </div>
                               </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => downloadBill(o.id, "invoice")} disabled={!o.grand_total} data-testid={`hotel-bill-invoice-${o.id}`}>
+                              <DropdownMenuItem onClick={() => downloadBill(o.id, "invoice")} disabled={o.status !== "delivered"} data-testid={`hotel-bill-invoice-${o.id}`}>
                                 <Receipt className="mr-2 h-4 w-4" />
                                 <div className="flex flex-col">
                                   <span>Invoice bill</span>
-                                  <span className="text-[11px] text-muted-foreground">{o.grand_total ? `With prices · ₹ ${o.grand_total.toFixed(2)}` : "Awaiting bill"}</span>
+                                  <span className="text-[11px] text-muted-foreground">
+                                    {o.status === "delivered"
+                                      ? (o.grand_total ? `With prices · ₹ ${o.grand_total.toFixed(2)}` : "No charge")
+                                      : "Available once delivered"}
+                                  </span>
                                 </div>
                               </DropdownMenuItem>
                             </DropdownMenuContent>
